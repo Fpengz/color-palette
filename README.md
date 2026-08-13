@@ -11,6 +11,8 @@ uv run uvicorn app.main:app --reload
 
 Open <http://127.0.0.1:8000>. Interactive API documentation is available at <http://127.0.0.1:8000/docs>.
 
+Pitch-ready product photos and a matching material inventory are available in [`example/`](example/README.md).
+
 ## What the demo does
 
 - Extracts 1–8 dominant colors from PNG, JPG, or WebP images.

@@ -1,0 +1,40 @@
+{
+  "batch_kg": 230,
+  "ingredients": [
+    {
+      "name": "Natural resin",
+      "color": "#EFE9DB",
+      "available_kg": 230,
+      "strength": 1,
+      "cost_per_kg": 1.45
+    },
+    {
+      "name": "Carbon black",
+      "color": "#121416",
+      "available_kg": 12,
+      "strength": 10,
+      "cost_per_kg": 5.2
+    },
+    {
+      "name": "Signal red",
+      "color": "#D92F26",
+      "available_kg": 18,
+      "strength": 10,
+      "cost_per_kg": 7.1
+    },
+    {
+      "name": "Warm yellow",
+      "color": "#F2B92F",
+      "available_kg": 15,
+      "strength": 8,
+      "cost_per_kg": 6.85
+    },
+    {
+      "name": "Ultramarine",
+      "color": "#214E9C",
+      "available_kg": 15,
+      "strength": 8,
+      "cost_per_kg": 7.4
+    }
+  ]
+}
