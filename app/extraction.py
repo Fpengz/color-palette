@@ -3,13 +3,18 @@ from __future__ import annotations
 from io import BytesIO
 
 import numpy as np
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageCms, ImageOps, UnidentifiedImageError
 
 from .color import Color, color_payload
 
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 MAX_PIXELS = 20_000_000
+ROI = tuple[int, int, int, int]
+SUPPORTED_FORMATS = frozenset({"JPEG", "PNG", "WEBP"})
+ALPHA_POLICY = "exclude_alpha_below_32; treat_remaining_pixels_as_opaque"
+ANIMATION_POLICY = "first_frame_only"
+MODEL_VERSION = "rgb-kmeans-prototype-v1"
 
 
 class ImageAnalysisError(ValueError):
@@ -45,22 +50,10 @@ def _kmeans(pixels: np.ndarray, clusters: int, iterations: int = 24) -> tuple[np
     return centroids, labels
 
 
-def extract_palette(data: bytes, color_count: int = 5) -> dict:
-    if not data:
-        raise ImageAnalysisError("The uploaded image is empty")
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise ImageAnalysisError("Image is larger than the 12 MB demo limit")
-
-    try:
-        image = Image.open(BytesIO(data))
-        if image.width * image.height > MAX_PIXELS:
-            raise ImageAnalysisError("Image dimensions are too large")
-        image = ImageOps.exif_transpose(image).convert("RGBA")
-    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
-        raise ImageAnalysisError("Upload a valid PNG, JPG, or WebP image") from exc
-
-    image.thumbnail((360, 360), Image.Resampling.LANCZOS)
-    rgba = np.asarray(image).reshape(-1, 4)
+def _analyze_region(image: Image.Image, color_count: int) -> dict:
+    analyzed = image.copy()
+    analyzed.thumbnail((360, 360), Image.Resampling.LANCZOS)
+    rgba = np.asarray(analyzed).reshape(-1, 4)
     opaque = rgba[rgba[:, 3] >= 32, :3]
     if len(opaque) == 0:
         raise ImageAnalysisError("The image contains no visible pixels")
@@ -82,9 +75,110 @@ def extract_palette(data: bytes, color_count: int = 5) -> dict:
         colors.append(payload)
 
     return {
-        "width": image.width,
-        "height": image.height,
+        "width": analyzed.width,
+        "height": analyzed.height,
         "analyzed_pixels": int(len(opaque)),
         "dominant": colors[0],
         "palette": colors,
+    }
+
+
+def _decode_image(data: bytes) -> tuple[Image.Image, dict]:
+    try:
+        source = Image.open(BytesIO(data))
+        image_format = (source.format or "").upper()
+        if image_format not in SUPPORTED_FORMATS:
+            supported = ", ".join(sorted(SUPPORTED_FORMATS))
+            raise ImageAnalysisError(f"Decoded image format {image_format or 'unknown'} is not supported; use {supported}")
+
+        frame_count = int(getattr(source, "n_frames", 1))
+        animated = bool(getattr(source, "is_animated", False) and frame_count > 1)
+        if animated:
+            source.seek(0)
+        image = ImageOps.exif_transpose(source)
+        if image.width * image.height > MAX_PIXELS:
+            raise ImageAnalysisError("Image dimensions are too large")
+
+        rgba = image.convert("RGBA")
+        icc_profile = image.info.get("icc_profile")
+        icc_status = "absent"
+        if icc_profile:
+            try:
+                input_profile = ImageCms.getOpenProfile(BytesIO(icc_profile))
+                output_profile = ImageCms.createProfile("sRGB")
+                converted = ImageCms.profileToProfile(
+                    image.convert("RGB"),
+                    input_profile,
+                    output_profile,
+                    outputMode="RGB",
+                )
+                converted.putalpha(rgba.getchannel("A"))
+                rgba = converted
+                icc_status = "converted_to_srgb"
+            except (ImageCms.PyCMSError, OSError, ValueError) as exc:
+                raise ImageAnalysisError("The embedded ICC profile could not be converted to sRGB") from exc
+
+        return rgba, {
+            "format": image_format,
+            "animated": animated,
+            "frame_count": frame_count,
+            "selected_frame": 0,
+            "animation_policy": ANIMATION_POLICY,
+            "icc_profile": icc_status,
+            "alpha_policy": ALPHA_POLICY,
+        }
+    except ImageAnalysisError:
+        raise
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        raise ImageAnalysisError("Upload a valid PNG, JPG, or WebP image") from exc
+
+
+def _validate_roi(roi: ROI, image_size: tuple[int, int]) -> ROI:
+    if len(roi) != 4:
+        raise ImageAnalysisError("ROI must contain x, y, width, and height")
+    x, y, width, height = roi
+    image_width, image_height = image_size
+    if x < 0 or y < 0 or width <= 0 or height <= 0:
+        raise ImageAnalysisError("ROI coordinates and dimensions must be positive")
+    if x + width > image_width or y + height > image_height:
+        raise ImageAnalysisError("ROI must fit inside the uploaded image")
+    return roi
+
+
+def extract_palette(data: bytes, color_count: int = 5, roi: ROI | None = None) -> dict:
+    if not data:
+        raise ImageAnalysisError("The uploaded image is empty")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise ImageAnalysisError("Image is larger than the 12 MB demo limit")
+
+    image, metadata = _decode_image(data)
+
+    full_frame = _analyze_region(image, color_count)
+    selected = full_frame
+    if roi is not None:
+        roi = _validate_roi(roi, image.size)
+        x, y, width, height = roi
+        selected = _analyze_region(image.crop((x, y, x + width, y + height)), color_count)
+
+    source = "roi" if roi is not None else "full_frame"
+    return {
+        "width": selected["width"],
+        "height": selected["height"],
+        "original_width": image.width,
+        "original_height": image.height,
+        "analyzed_width": selected["width"],
+        "analyzed_height": selected["height"],
+        "analyzed_pixels": selected["analyzed_pixels"],
+        "source": source,
+        "roi": {"x": roi[0], "y": roi[1], "width": roi[2], "height": roi[3]} if roi else None,
+        "model_version": MODEL_VERSION,
+        "calibration_status": "uncalibrated",
+        **metadata,
+        "dominant": selected["dominant"],
+        "palette": selected["palette"],
+        "full_frame": {
+            "analyzed_pixels": full_frame["analyzed_pixels"],
+            "dominant": full_frame["dominant"],
+            "palette": full_frame["palette"],
+        },
     }

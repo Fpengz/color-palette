@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import math
+import time
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+from starlette.concurrency import run_in_threadpool
 
 from .color import parse_hex
-from .extraction import ImageAnalysisError, extract_palette
-from .mixing import Ingredient, optimize_recipe
+from .data_contract import TargetMeasurement
+from .extraction import MAX_UPLOAD_BYTES, ImageAnalysisError, extract_palette
+from .mixing import Ingredient, RecipeConstraints, optimize_recipe
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -29,21 +34,110 @@ class IngredientInput(BaseModel):
     cost_per_kg: float = Field(default=0, ge=0, le=1_000_000)
     strength: float = Field(default=1, gt=0, le=1000)
 
+    @field_validator("name")
+    @classmethod
+    def normalized_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Material name cannot be blank")
+        return normalized
+
+    @field_validator("available_kg", "cost_per_kg", "strength")
+    @classmethod
+    def finite_values(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("Material values must be finite")
+        return value
+
     @field_validator("color")
     @classmethod
     def valid_color(cls, value: str) -> str:
         return parse_hex(value).hex
 
 
+class RecipeConstraintsInput(BaseModel):
+    minimum_dose_kg: float = Field(default=0, ge=0, le=1_000_000)
+    scale_increment_kg: float = Field(default=0.0001, gt=0, le=1_000_000)
+    locked_materials: list[str] = Field(default_factory=list, max_length=12)
+    mutually_exclusive: list[list[str]] = Field(default_factory=list, max_length=12)
+    preferred_ingredient_count: int | None = Field(default=None, ge=1, le=12)
+    correction_recipe: dict[str, float] = Field(default_factory=dict)
+    color_tolerance_delta_e: float | None = Field(default=None, ge=0)
+
+    @field_validator("minimum_dose_kg", "scale_increment_kg", "color_tolerance_delta_e")
+    @classmethod
+    def finite_constraint_values(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("Recipe constraints must be finite")
+        return value
+
+    @field_validator("locked_materials")
+    @classmethod
+    def valid_locked_names(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if any(not value for value in normalized):
+            raise ValueError("Locked material names cannot be blank")
+        return normalized
+
+    @field_validator("correction_recipe")
+    @classmethod
+    def finite_correction_masses(cls, values: dict[str, float]) -> dict[str, float]:
+        if any(not name.strip() or not math.isfinite(mass) or mass < 0 for name, mass in values.items()):
+            raise ValueError("Correction recipe names and masses must be finite and nonnegative")
+        return {name.strip(): mass for name, mass in values.items()}
+
+
 class MixRequest(BaseModel):
     target: str
+    target_source: Literal["manual", "full_frame", "roi"] = "manual"
     batch_kg: float = Field(gt=0, le=1_000_000)
     ingredients: list[IngredientInput] = Field(min_length=2, max_length=12)
+    constraints: RecipeConstraintsInput = Field(default_factory=RecipeConstraintsInput)
 
     @field_validator("target")
     @classmethod
     def valid_target(cls, value: str) -> str:
         return parse_hex(value).hex
+
+    @field_validator("batch_kg")
+    @classmethod
+    def finite_batch(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("Batch mass must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def unique_material_names(self) -> "MixRequest":
+        names = [item.name.casefold() for item in self.ingredients]
+        if len(names) != len(set(names)):
+            raise ValueError("Material names must be unique")
+        return self
+
+
+async def _read_upload_with_limit(file: UploadFile) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    chunk_size = 1024 * 1024
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            raise ImageAnalysisError("Image is larger than the 12 MB demo limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _failure_detail(code: str, message: str, started: float) -> dict:
+    return {
+        "code": code,
+        "message": message,
+        "telemetry": {
+            "outcome": "error",
+            "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+        },
+    }
 
 
 @app.get("/", include_in_schema=False)
@@ -56,21 +150,55 @@ def health() -> dict:
     return {"status": "ok", "service": "chromix"}
 
 
+@app.post("/api/target/validate")
+def validate_target(target: TargetMeasurement) -> dict:
+    return {
+        "status": "accepted",
+        "source": target.source,
+        "calibration_status": "pending",
+        "target": target.model_dump(mode="json"),
+        "disclaimer": "Target metadata is validated; production use still requires a validated material calibration.",
+    }
+
+
 @app.post("/api/extract")
-async def extract(file: UploadFile = File(...), colors: int = Form(default=5, ge=1, le=8)) -> dict:
-    if file.content_type and not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=415, detail="Please upload an image file")
+async def extract(
+    file: UploadFile = File(...),
+    colors: int = Form(default=5, ge=1, le=8),
+    roi_x: int | None = Form(default=None, ge=0),
+    roi_y: int | None = Form(default=None, ge=0),
+    roi_width: int | None = Form(default=None, gt=0),
+    roi_height: int | None = Form(default=None, gt=0),
+) -> dict:
+    started = time.perf_counter()
+    roi_values = (roi_x, roi_y, roi_width, roi_height)
+    if any(value is not None for value in roi_values) and not all(value is not None for value in roi_values):
+        raise HTTPException(
+            status_code=422,
+            detail=_failure_detail("invalid_roi", "ROI requires x, y, width, and height", started),
+        )
+    roi = tuple(value for value in roi_values if value is not None)
     try:
-        return extract_palette(await file.read(), colors)
+        data = await _read_upload_with_limit(file)
+        result = await run_in_threadpool(extract_palette, data, colors, roi=roi or None)
+        result["telemetry"] = {
+            "outcome": "success",
+            "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+        }
+        return result
     except ImageAnalysisError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail=_failure_detail("image_analysis_failed", str(exc), started),
+        ) from exc
 
 
 @app.post("/api/mix")
 def mix(request: MixRequest) -> dict:
+    started = time.perf_counter()
     ingredients = [
         Ingredient(
-            name=item.name.strip(),
+            name=item.name,
             color=parse_hex(item.color),
             available_kg=item.available_kg,
             cost_per_kg=item.cost_per_kg,
@@ -79,6 +207,25 @@ def mix(request: MixRequest) -> dict:
         for item in request.ingredients
     ]
     try:
-        return optimize_recipe(request.target, request.batch_kg, ingredients)
+        recipe_constraints = RecipeConstraints(
+            minimum_dose_kg=request.constraints.minimum_dose_kg,
+            scale_increment_kg=request.constraints.scale_increment_kg,
+            locked_materials=tuple(request.constraints.locked_materials),
+            mutually_exclusive=tuple(tuple(group) for group in request.constraints.mutually_exclusive),
+            preferred_ingredient_count=request.constraints.preferred_ingredient_count,
+            correction_recipe=tuple(request.constraints.correction_recipe.items()),
+            color_tolerance_delta_e=request.constraints.color_tolerance_delta_e,
+        )
+        result = optimize_recipe(request.target, request.batch_kg, ingredients, recipe_constraints)
+        result["input_provenance"]["target_source"] = request.target_source
+        result["constraints"] = request.constraints.model_dump()
+        result["telemetry"] = {
+            "outcome": "success",
+            "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+        }
+        return result
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail=_failure_detail("formulation_failed", str(exc), started),
+        ) from exc

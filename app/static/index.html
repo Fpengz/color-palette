@@ -3,112 +3,125 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Turn a product photo into a production-ready color recipe.">
-  <title>Chromix — Color intelligence for manufacturing</title>
+  <meta id="pageDescription" name="description" content="Turn a product photo into an inventory-aware digital color recipe.">
+  <title>Chromix — Color intelligence prototype</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <div class="noise"></div>
   <header class="topbar">
     <a class="brand" href="#"><span class="brand-mark"><i></i><i></i><i></i></span> CHROMIX</a>
-    <div class="status"><span></span> formulation engine online</div>
+    <div class="header-actions">
+      <div class="status"><i></i><span data-i18n="status">formulation engine online</span></div>
+      <div class="language-switch" role="group" aria-label="Language / 语言">
+        <button type="button" class="language-button active" data-locale="en" aria-pressed="true">EN</button>
+        <button type="button" class="language-button" data-locale="zh" aria-pressed="false">中文</button>
+      </div>
+    </div>
   </header>
 
   <main>
     <section class="hero">
-      <div class="eyebrow">COLOR INTELLIGENCE / MANUFACTURING</div>
-      <h1>From product photo<br>to <em>mixing recipe.</em></h1>
-      <p>Extract the color your customer wants. Formulate it from materials you already have. Scale every ingredient to the exact production batch.</p>
-      <div class="hero-flow" aria-label="Workflow">
-        <div><b>01</b><span>Capture</span></div><i>→</i><div><b>02</b><span>Analyze</span></div><i>→</i><div><b>03</b><span>Formulate</span></div>
+      <div class="eyebrow" data-i18n="eyebrow">COLOR INTELLIGENCE / MANUFACTURING</div>
+      <h1><span data-i18n="heroTitleBefore" data-i18n-html="true">From product photo<br>to </span><em data-i18n="heroTitleAccent">mixing recipe.</em></h1>
+      <p data-i18n="heroDescription">Choose the color your customer wants. Estimate a mix from materials you already have. Scale every ingredient to the exact batch.</p>
+      <div class="hero-flow" data-i18n="workflow" data-i18n-attribute="aria-label" aria-label="Workflow">
+        <div><b>01</b><span data-i18n="capture">Capture</span></div><i>→</i><div><b>02</b><span data-i18n="analyze">Analyze</span></div><i>→</i><div><b>03</b><span data-i18n="formulate">Formulate</span></div>
       </div>
     </section>
 
     <section class="workspace">
       <div class="step-heading">
         <span>01</span>
-        <div><p>COLOR CAPTURE</p><h2>What color are we making?</h2></div>
+        <div><p data-i18n="colorCapture">COLOR CAPTURE</p><h2 data-i18n="colorQuestion">What color are we making?</h2></div>
       </div>
 
       <div class="capture-grid">
-        <label class="dropzone" id="dropzone">
+        <div class="dropzone" id="dropzone" tabindex="0" role="button" data-i18n="uploadImage" data-i18n-attribute="aria-label" aria-label="Upload a product image">
           <input type="file" id="imageInput" accept="image/png,image/jpeg,image/webp">
           <div class="drop-empty" id="dropEmpty">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 13v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/></svg>
-            <strong>Drop a product image here</strong>
-            <span>or click to browse · PNG, JPG, WEBP</span>
+            <strong data-i18n="dropImage">Drop a product image here</strong>
+            <span data-i18n="browseImage">or click to browse · PNG, JPG, WEBP</span>
           </div>
-          <img id="preview" alt="Uploaded product preview">
+          <img id="preview" data-i18n="uploadedPreview" data-i18n-attribute="alt" alt="Uploaded product preview">
+          <div class="roi-selection" id="roiSelection" aria-hidden="true"><div id="roiBox"></div></div>
           <div class="scan-line"></div>
-        </label>
+        </div>
 
         <div class="analysis-panel">
-          <div class="panel-label"><span>EXTRACTED PALETTE</span><small id="imageMeta">Awaiting image</small></div>
+          <div class="panel-label"><span data-i18n="extractedPalette">EXTRACTED PALETTE</span><small id="imageMeta" data-i18n="awaitingImage">Awaiting image</small></div>
           <div class="swatches" id="swatches">
             <button class="swatch placeholder"></button><button class="swatch placeholder"></button><button class="swatch placeholder"></button><button class="swatch placeholder"></button><button class="swatch placeholder"></button>
           </div>
+          <div class="selection-controls" role="group" data-i18n="paletteSource" data-i18n-attribute="aria-label" aria-label="Palette source">
+            <button id="fullFramePalette" type="button" class="source-button active" data-i18n="fullFrame">FULL FRAME</button>
+            <button id="selectRegion" type="button" class="source-button" data-i18n="selectRegion">SELECT REGION</button>
+          </div>
+          <p class="selection-help" id="selectionHelp" data-i18n="selectionHelp">Choose a swatch, enter a hex value, or select a region before formulating.</p>
           <div class="target-control">
-            <label for="targetHex">Target color</label>
+            <label for="targetHex" data-i18n="targetColor">Target color</label>
             <div class="color-field">
               <input type="color" id="targetPicker" value="#d8503f">
               <input type="text" id="targetHex" value="#D8503F" maxlength="7" spellcheck="false">
-              <button id="copyHex" type="button" title="Copy color">COPY</button>
+              <button id="copyHex" type="button" data-i18n="copy" data-i18n-attribute="title" title="Copy color"><span data-i18n="copy">COPY</span></button>
             </div>
+            <small id="targetSource" data-i18n="manualTarget">Manual target</small>
           </div>
           <div class="metrics" id="colorMetrics">
-            <div><span>RGB</span><b>216, 80, 63</b></div>
-            <div><span>RGBA HEX</span><b>#D8503FFF</b></div>
-            <div><span>LAB</span><b>51.6, 52.7, 36.8</b></div>
+            <div><span data-i18n="rgb">RGB</span><b>216, 80, 63</b></div>
+            <div><span data-i18n="rgbaHex">RGBA HEX</span><b>#D8503FFF</b></div>
+            <div><span data-i18n="lab">LAB</span><b>51.6, 52.7, 36.8</b></div>
           </div>
         </div>
       </div>
 
       <div class="step-heading formula-heading">
         <span>02</span>
-        <div><p>FORMULATION</p><h2>Build the production mix.</h2></div>
+        <div><p data-i18n="formulationEstimate">FORMULATION ESTIMATE</p><h2 data-i18n="buildPrototype">Build the prototype mix.</h2></div>
       </div>
 
       <div class="formula-grid">
         <section class="material-card">
           <div class="batch-row">
-            <div><label for="batchMass">Production batch</label><p>Total required material</p></div>
+            <div><label for="batchMass" data-i18n="productionBatch">Production batch</label><p data-i18n="totalRequiredMaterial">Total required material</p></div>
             <div class="mass-input"><input id="batchMass" type="number" value="230" min="0.01" step="0.1"><span>KG</span></div>
           </div>
-          <div class="table-head"><span>MATERIAL</span><span>COLOR</span><span>AVAILABLE</span><span>STRENGTH</span><span>COST / KG</span><span></span></div>
+          <div class="table-head"><span data-i18n="material">MATERIAL</span><span data-i18n="color">COLOR</span><span data-i18n="available">AVAILABLE</span><span data-i18n="strength">STRENGTH</span><span data-i18n="costPerKg">COST / KG</span><span></span></div>
           <div id="materials"></div>
-          <button class="add-button" id="addMaterial" type="button"><b>+</b> Add material</button>
-          <button class="primary-button" id="calculate" type="button"><span>CALCULATE FORMULA</span><b>→</b></button>
+          <button class="add-button" id="addMaterial" type="button"><b>+</b> <span data-i18n="addMaterial">Add material</span></button>
+          <button class="primary-button" id="calculate" type="button"><span data-i18n="calculateFormula">CALCULATE FORMULA</span><b>→</b></button>
           <p class="error" id="errorMessage" role="alert"></p>
         </section>
 
         <aside class="result-card" id="resultCard">
-          <div class="result-header"><span>FORMULATION RESULT</span><div class="confidence"><i></i><b id="quality">READY</b></div></div>
+          <div class="result-header"><span data-i18n="formulationEstimate">FORMULATION ESTIMATE</span><div class="confidence"><i></i><b id="quality" data-i18n="ready">READY</b></div></div>
           <div class="match-visual">
-            <div class="target-half" id="targetVisual"><span>TARGET</span></div>
-            <div class="result-half" id="resultVisual"><span>PREDICTED</span></div>
+            <div class="target-half" id="targetVisual"><span data-i18n="target">TARGET</span></div>
+            <div class="result-half" id="resultVisual"><span data-i18n="predicted">PREDICTED</span></div>
           </div>
           <div class="match-score">
-            <div><span>COLOR DIFFERENCE</span><strong id="deltaE">—</strong></div>
-            <p id="scoreHelp">Run the formulation engine to compare the digital target and predicted mix.</p>
+            <div><span data-i18n="colorDifference">COLOR DIFFERENCE</span><strong id="deltaE">—</strong></div>
+            <p id="scoreHelp" data-i18n="runFormulation">Run the formulation engine to compare the digital target and predicted mix.</p>
           </div>
-          <div class="recipe" id="recipe"><div class="empty-result">Your ingredient recipe will appear here.</div></div>
-          <div class="result-total" id="resultTotal"><span>TOTAL BATCH</span><b>230.000 kg</b></div>
-          <p class="model-note">Digital estimate. Production recipes require calibration using measured material samples.</p>
+          <div class="recipe" id="recipe"><div class="empty-result" data-i18n="emptyRecipe">Your ingredient recipe will appear here.</div></div>
+          <div class="result-total" id="resultTotal"><span data-i18n="totalBatch">TOTAL BATCH</span><b>230.000 kg</b></div>
+          <p class="model-note" data-i18n="modelNote">Digital estimate. Production recipes require calibration using measured material samples.</p>
         </aside>
       </div>
     </section>
 
     <section class="value-strip">
-      <div><b>↓</b><span><strong>Less trial & error</strong>Optimize before the first physical batch.</span></div>
-      <div><b>◎</b><span><strong>Inventory aware</strong>Never recommend material you don't have.</span></div>
-      <div><b>↗</b><span><strong>Scale instantly</strong>From a 1 kg sample to 10-ton production.</span></div>
+      <div><b>↓</b><span><strong data-i18n="lessTrial">Less trial &amp; error</strong><span data-i18n="lessTrialText">Optimize before the first physical batch.</span></span></div>
+      <div><b>◎</b><span><strong data-i18n="inventoryAware">Inventory aware</strong><span data-i18n="inventoryAwareText">Never recommend material you don't have.</span></span></div>
+      <div><b>↗</b><span><strong data-i18n="scaleInstantly">Scale instantly</strong><span data-i18n="scaleInstantlyText">From a 1 kg sample to large-batch planning.</span></span></div>
     </section>
   </main>
 
-  <footer><span>CHROMIX / PROTOTYPE 01</span><span>COLOR SCIENCE × MATERIAL INTELLIGENCE</span></footer>
+  <footer><span>CHROMIX / PROTOTYPE 01</span><span data-i18n="footerTagline">COLOR SCIENCE × MATERIAL INTELLIGENCE</span></footer>
   <script src="/static/app.js" defer></script>
 </body>
 </html>
