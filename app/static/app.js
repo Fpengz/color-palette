@@ -320,9 +320,6 @@ dropzone.addEventListener("drop", e => {
   if (!selectionMode) analyzeImage(e.dataTransfer.files[0]);
 });
 imageInput.addEventListener("change", e => analyzeImage(e.target.files[0]));
-dropzone.addEventListener("click", e => {
-  if (!selectionMode && !e.target.closest("#roiSelection")) imageInput.click();
-});
 dropzone.addEventListener("keydown", e => {
   if (!selectionMode && (e.key === "Enter" || e.key === " ")) {
     e.preventDefault();

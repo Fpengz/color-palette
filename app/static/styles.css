@@ -46,7 +46,8 @@ button { color: inherit; }
 .dropzone { position: relative; min-height: 390px; display: grid; place-items: center; overflow: hidden; cursor: pointer; background: #20221e; border-right: 1px solid #494b46; }
 .dropzone:focus-visible { outline: 2px solid var(--acid); outline-offset: -6px; }
 .dropzone.drag { background: #282b24; outline: 2px solid var(--acid); outline-offset: -8px; }
-.dropzone input { display: none; }
+.dropzone input { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.dropzone input:focus-visible { outline: 2px solid var(--acid); outline-offset: -6px; }
 .drop-empty { text-align: center; color: #dedfd9; display: flex; flex-direction: column; align-items: center; }
 .drop-empty svg { width: 38px; fill: none; stroke: var(--acid); stroke-width: 1.4; margin-bottom: 20px; }
 .drop-empty strong { font-size: 16px; margin-bottom: 7px; }.drop-empty span { color: #898c84; font-size: 11px; }
