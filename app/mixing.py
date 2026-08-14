@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from decimal import Decimal
+from functools import lru_cache
 from itertools import combinations, product
 
 import numpy as np
@@ -14,7 +15,9 @@ from .color import Color, color_payload, delta_e_2000, parse_hex, quality_label,
 DISPENSING_UNIT_KG = 0.0001
 MODEL_VERSION = "digital-km-prototype-v1"
 CALIBRATION_STATUS = "uncalibrated"
-OPTIMIZER_VERSION = "slsqp-multistart-dispensing-v2"
+OPTIMIZER_VERSION = "slsqp-multistart-dispensing-v4"
+MAX_RANDOM_STARTS = 18
+EARLY_STOP_DELTA_E = 0.05
 
 
 @dataclass(frozen=True)
@@ -288,6 +291,13 @@ def _reflectance_to_ks(reflectance: np.ndarray) -> np.ndarray:
     return (1.0 - safe) ** 2 / (2.0 * safe)
 
 
+@lru_cache(maxsize=256)
+def _cached_ingredient_ks(rgb: tuple[int, int, int], strength: float) -> tuple[float, ...]:
+    """Cache material preprocessing across repeated formulations."""
+    reflectance = srgb_to_linear(np.asarray(rgb, dtype=float))
+    return tuple((_reflectance_to_ks(reflectance) * strength).tolist())
+
+
 def _mixed_rgb(fractions: np.ndarray, ingredient_ks: np.ndarray) -> np.ndarray:
     mixed_ks = fractions @ ingredient_ks
     reflectance = 1.0 + mixed_ks - np.sqrt(mixed_ks**2 + 2.0 * mixed_ks)
@@ -326,9 +336,10 @@ def optimize_recipe(
     if caps.sum() < 1 - 1e-9:
         raise ValueError(f"Only {sum(i.available_kg for i in ingredients):.3f} kg is available for a {batch_kg:.3f} kg batch")
 
-    reflectance = np.stack([srgb_to_linear(np.array(item.color.rgb)) for item in ingredients])
-    strengths = np.array([item.strength for item in ingredients], dtype=float)[:, None]
-    ingredient_ks = _reflectance_to_ks(reflectance) * strengths
+    ingredient_ks = np.asarray(
+        [_cached_ingredient_ks(item.color.rgb, item.strength) for item in ingredients],
+        dtype=float,
+    )
     target_lab = rgb_to_lab(np.array(target.rgb))
 
     def loss(fractions: np.ndarray) -> float:
@@ -357,6 +368,7 @@ def optimize_recipe(
     )
     rng = np.random.default_rng(73)
     candidate_attempts = 0
+    stop_early = False
     for active_tuple in candidate_sets:
         active = set(active_tuple)
         lower = np.zeros(len(ingredients), dtype=float)
@@ -391,7 +403,7 @@ def optimize_recipe(
                         total=residual_total,
                     )
                 ]
-                for _ in range(min(18, 4 * len(ingredients))):
+                for _ in range(MAX_RANDOM_STARTS):
                     starts.append(
                         lower + _project_capped_simplex(
                             rng.random(len(ingredients)) - lower,
@@ -469,6 +481,16 @@ def optimize_recipe(
             if current_loss < best_loss:
                 best, best_loss = current, current_loss
                 best_status = current_status
+            if (
+                result.success
+                and not constraints.has_operational_constraints
+                and constraints.color_tolerance_delta_e is None
+                and current_delta_e <= EARLY_STOP_DELTA_E
+            ):
+                stop_early = True
+                break
+        if stop_early:
+            break
 
     if not candidates:
         raise ValueError("The formulation optimizer could not find a feasible recipe")
