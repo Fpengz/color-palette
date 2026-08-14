@@ -224,10 +224,6 @@ function setLocale(locale) {
   applyTranslations();
 }
 
-document.querySelectorAll(".language-button").forEach(button => {
-  button.addEventListener("click", () => setLocale(button.dataset.locale));
-});
-
 const defaults = [
   { nameKey: "materialNaturalResin", color: "#EFE9DB", available: 230, strength: 1, cost: 1.45 },
   { nameKey: "materialCarbonBlack", color: "#121416", available: 12, strength: 10, cost: 5.20 },
@@ -618,9 +614,23 @@ function applyTranslations() {
   if (lastResult) renderResult(lastResult, false);
 }
 
+function initializeLanguageControls() {
+  document.querySelectorAll(".language-button").forEach(button => {
+    button.addEventListener("click", event => {
+      event.preventDefault();
+      setLocale(button.dataset.locale);
+    });
+  });
+  applyTranslations();
+}
+
 fullFramePalette.disabled = true;
 selectRegion.disabled = true;
 setTarget("#D8503F");
 targetSelected = false;
 updateCalculateState();
-applyTranslations();
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initializeLanguageControls, { once: true });
+} else {
+  initializeLanguageControls();
+}

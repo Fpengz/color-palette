@@ -21,6 +21,8 @@ def test_home_exposes_chinese_demo_locale() -> None:
     page = client.get("/").text
 
     assert 'data-locale="zh"' in page
+    assert 'href="?lang=zh"' in page
+    assert '/static/app.js?v=2' in page
     assert "中文" in page
     assert "pageDescription" in page
 

@@ -22,7 +22,7 @@ button { color: inherit; }
 .status { font: 500 10px "DM Mono"; letter-spacing: .1em; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
 .status > i { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #6bad39; box-shadow: 0 0 0 4px #dfe9d2; }
 .language-switch { display: flex; align-items: center; border: 1px solid var(--line); }
-.language-button { border: 0; background: transparent; color: var(--muted); padding: 7px 9px; cursor: pointer; font: 500 9px "DM Mono"; letter-spacing: .06em; }
+.language-button { display: inline-block; border: 0; background: transparent; color: var(--muted); padding: 7px 9px; cursor: pointer; font: 500 9px "DM Mono"; letter-spacing: .06em; text-decoration: none; }
 .language-button:hover, .language-button.active { background: var(--ink); color: white; }
 
 .hero { max-width: 1220px; margin: 0 auto; padding: 94px 24px 78px; position: relative; }
