@@ -134,3 +134,21 @@ def test_metamerism_report_flags_a_match_that_changes_with_illuminant() -> None:
     assert report.delta_e_by_illuminant["D65"] < 0.02
     assert report.delta_e_by_illuminant["ALT"] > 0.02
     assert report.is_metameric is True
+
+
+def test_metamerism_rejects_duplicate_illuminant_names() -> None:
+    grid = SpectralGrid.standard()
+    first = Spectrum(grid, (0.5,) * grid.size)
+    second = Spectrum(grid, (0.4,) * grid.size)
+    twin = Illuminant("D65", Spectrum(grid, (50.0,) * grid.size, kind="illuminant"))
+
+    # Keying the report by name would silently drop one of them.
+    with pytest.raises(ValueError, match="distinct name"):
+        metamerism_report(first, second, (standard_illuminant_d65(), twin))
+
+
+def test_ks_spectra_reject_negative_values() -> None:
+    grid = SpectralGrid.regular(400, 500, 50)
+
+    with pytest.raises(ValueError, match="cannot be negative"):
+        Spectrum(grid, (-1.0, 0.0, 1.0), kind="ks")

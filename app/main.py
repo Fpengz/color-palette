@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import atexit
 import math
+import multiprocessing
+import os
+import threading
 import time
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Literal
 
+import anyio
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,6 +26,70 @@ from .mixing import Ingredient, RecipeConstraints, optimize_recipe
 
 
 BASE_DIR = Path(__file__).resolve().parent
+
+# Formulation is CPU-bound and can run for seconds, and it is GIL-bound: eight
+# concurrent worst-case solves measured *slower* in threads than run one after
+# another (0.82x), while eight processes ran 3.6x faster. So the solve goes to a
+# worker process, and a semaphore bounds how many callers queue for one. Without
+# the bound, concurrent solves all finished together -- nobody was served early
+# -- and cheap endpoints starved behind a saturated threadpool.
+FORMULATION_SLOTS = max(1, min(8, os.cpu_count() or 2))
+# Beyond this many callers waiting for a slot, shed load instead of queueing
+# work nobody is still waiting for.
+FORMULATION_QUEUE_LIMIT = FORMULATION_SLOTS * 8
+_formulation_slots = anyio.Semaphore(FORMULATION_SLOTS)
+_formulation_waiting = 0
+_formulation_pool: ProcessPoolExecutor | None = None
+_pool_lock = threading.Lock()
+_pool_unavailable = False
+
+
+def _formulation_pool_or_none() -> ProcessPoolExecutor | None:
+    """Return the shared solver pool, or None if this platform cannot host one.
+
+    Built on first use and reused. "spawn" keeps workers clear of the server's
+    threads rather than forking them.
+    """
+    global _formulation_pool, _pool_unavailable
+    if _formulation_pool is not None or _pool_unavailable:
+        return _formulation_pool
+    with _pool_lock:
+        if _formulation_pool is None and not _pool_unavailable:
+            try:
+                _formulation_pool = ProcessPoolExecutor(
+                    max_workers=FORMULATION_SLOTS,
+                    mp_context=multiprocessing.get_context("spawn"),
+                )
+            except (OSError, ValueError, ImportError):
+                # Sandboxes and some container policies forbid subprocesses;
+                # fall back to solving in-thread rather than failing requests.
+                _pool_unavailable = True
+    return _formulation_pool
+
+
+async def _run_formulation(*args: object) -> dict:
+    """Solve off the event loop, in a worker process when one is available."""
+    pool = await run_in_threadpool(_formulation_pool_or_none)
+    if pool is None:
+        return await run_in_threadpool(optimize_recipe, *args)
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(pool, optimize_recipe, *args)
+    except BrokenProcessPool:
+        # A worker died; drop the pool so the next request rebuilds it.
+        _shutdown_formulation_pool()
+        return await run_in_threadpool(optimize_recipe, *args)
+
+
+def _shutdown_formulation_pool() -> None:
+    global _formulation_pool
+    with _pool_lock:
+        pool, _formulation_pool = _formulation_pool, None
+    if pool is not None:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+atexit.register(_shutdown_formulation_pool)
 
 app = FastAPI(
     title="Chromix API",
@@ -107,7 +179,7 @@ class MixRequest(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def unique_material_names(self) -> "MixRequest":
+    def unique_material_names(self) -> MixRequest:
         names = [item.name.casefold() for item in self.ingredients]
         if len(names) != len(set(names)):
             raise ValueError("Material names must be unique")
@@ -124,13 +196,19 @@ async def _read_upload_with_limit(file: UploadFile) -> bytes:
             break
         total += len(chunk)
         if total > MAX_UPLOAD_BYTES:
-            raise ImageAnalysisError("Image is larger than the 12 MB demo limit")
+            raise ImageAnalysisError("Image is larger than the 12 MB demo limit", code="upload_too_large")
         chunks.append(chunk)
     return b"".join(chunks)
 
 
-def _failure_detail(code: str, message: str, started: float) -> dict:
-    return {
+def _failure_detail(
+    code: str,
+    message: str,
+    started: float,
+    reason_code: str | None = None,
+    reason_params: dict | None = None,
+) -> dict:
+    detail = {
         "code": code,
         "message": message,
         "telemetry": {
@@ -138,6 +216,12 @@ def _failure_detail(code: str, message: str, started: float) -> dict:
             "duration_ms": round((time.perf_counter() - started) * 1000, 2),
         },
     }
+    # A coded cause lets the interface show the failure in the user's language
+    # instead of echoing the English message.
+    if reason_code:
+        detail["reason_code"] = reason_code
+        detail["reason_params"] = reason_params or {}
+    return detail
 
 
 @app.get("/", include_in_schema=False)
@@ -175,7 +259,9 @@ async def extract(
     if any(value is not None for value in roi_values) and not all(value is not None for value in roi_values):
         raise HTTPException(
             status_code=422,
-            detail=_failure_detail("invalid_roi", "ROI requires x, y, width, and height", started),
+            detail=_failure_detail(
+                "invalid_roi", "ROI requires x, y, width, and height", started, "roi_incomplete"
+            ),
         )
     roi = tuple(value for value in roi_values if value is not None)
     try:
@@ -189,13 +275,29 @@ async def extract(
     except ImageAnalysisError as exc:
         raise HTTPException(
             status_code=400,
-            detail=_failure_detail("image_analysis_failed", str(exc), started),
+            detail=_failure_detail(
+                "image_analysis_failed", str(exc), started, exc.code, exc.params
+            ),
         ) from exc
 
 
 @app.post("/api/mix")
-def mix(request: MixRequest) -> dict:
+async def mix(request: MixRequest) -> dict:
+    global _formulation_waiting
+
     started = time.perf_counter()
+    if _formulation_waiting >= FORMULATION_QUEUE_LIMIT:
+        raise HTTPException(
+            status_code=503,
+            detail=_failure_detail(
+                "formulation_busy",
+                "The formulation engine is at capacity; retry shortly.",
+                started,
+                "formulation_busy",
+                {"queued": _formulation_waiting},
+            ),
+            headers={"Retry-After": "5"},
+        )
     ingredients = [
         Ingredient(
             name=item.name,
@@ -216,16 +318,29 @@ def mix(request: MixRequest) -> dict:
             correction_recipe=tuple(request.constraints.correction_recipe.items()),
             color_tolerance_delta_e=request.constraints.color_tolerance_delta_e,
         )
-        result = optimize_recipe(request.target, request.batch_kg, ingredients, recipe_constraints)
+        # Wait for a slot on the event loop rather than inside a worker thread,
+        # so queued callers do not occupy the threadpool that serves everything
+        # else. The solve itself still runs off the loop.
+        _formulation_waiting += 1
+        try:
+            async with _formulation_slots:
+                result = await _run_formulation(
+                    request.target, request.batch_kg, ingredients, recipe_constraints
+                )
+        finally:
+            _formulation_waiting -= 1
         result["input_provenance"]["target_source"] = request.target_source
         result["constraints"] = request.constraints.model_dump()
         result["telemetry"] = {
             "outcome": "success",
             "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            "queue_slots": FORMULATION_SLOTS,
         }
         return result
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail=_failure_detail("formulation_failed", str(exc), started),
+            detail=_failure_detail(
+                "formulation_failed", str(exc), started, getattr(exc, "code", None), getattr(exc, "params", None)
+            ),
         ) from exc

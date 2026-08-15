@@ -8,7 +8,7 @@ needed before a measured model can be enabled in production.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 from scipy.optimize import minimize
@@ -55,14 +55,14 @@ class SpectralGrid:
             raise ValueError("Spectral wavelengths must be strictly increasing")
 
     @classmethod
-    def standard(cls) -> "SpectralGrid":
+    def standard(cls) -> SpectralGrid:
         return cls(WAVELENGTHS_400_700_10NM)
 
     @classmethod
-    def regular(cls, start_nm: float, end_nm: float, step_nm: float) -> "SpectralGrid":
+    def regular(cls, start_nm: float, end_nm: float, step_nm: float) -> SpectralGrid:
         if not all(math.isfinite(value) for value in (start_nm, end_nm, step_nm)) or step_nm <= 0:
             raise ValueError("A regular spectral grid needs finite bounds and a positive step")
-        count = int(round((end_nm - start_nm) / step_nm))
+        count = round((end_nm - start_nm) / step_nm)
         if count < 1 or not math.isclose(start_nm + count * step_nm, end_nm, abs_tol=1e-8):
             raise ValueError("Spectral grid bounds must be divisible by the step")
         return cls(tuple(start_nm + index * step_nm for index in range(count + 1)))
@@ -87,17 +87,17 @@ class Spectrum:
             raise ValueError("Spectrum values must match the grid and be finite")
         if self.kind == "reflectance" and np.any((values < 0) | (values > 1)):
             raise ValueError("Reflectance values must be between 0 and 1")
-        if self.kind in {"k", "s"} and np.any(values < 0):
+        if self.kind in {"k", "s", "ks"} and np.any(values < 0):
             raise ValueError("K/S coefficient values cannot be negative")
 
     @classmethod
-    def from_array(cls, grid: SpectralGrid, values: np.ndarray, kind: str = "reflectance") -> "Spectrum":
+    def from_array(cls, grid: SpectralGrid, values: np.ndarray, kind: str = "reflectance") -> Spectrum:
         return cls(grid, tuple(float(value) for value in np.asarray(values, dtype=float)), kind)
 
     def array(self) -> np.ndarray:
         return np.asarray(self.values, dtype=float)
 
-    def resample(self, grid: SpectralGrid) -> "Spectrum":
+    def resample(self, grid: SpectralGrid) -> Spectrum:
         values = np.interp(grid.array(), self.grid.array(), self.array())
         return Spectrum.from_array(grid, values, self.kind)
 
@@ -190,7 +190,9 @@ def ks_to_reflectance(ks: Spectrum) -> Spectrum:
     if ks.kind != "ks":
         raise ValueError("Reflectance conversion requires a K/S spectrum")
     values = np.clip(ks.array(), 0, None)
-    reflectance = 1 + values - np.sqrt(values**2 + 2 * values)
+    # Equivalent to 1 + k - sqrt(k^2 + 2k), but without the subtraction of two
+    # near-equal terms that loses precision once K/S is large.
+    reflectance = 1.0 / (1.0 + values + np.sqrt(values**2 + 2 * values))
     return Spectrum.from_array(ks.grid, np.clip(reflectance, 0, 1), kind="reflectance")
 
 
@@ -378,10 +380,12 @@ def optimize_spectral_recipe(
         difference = delta_e_2000(target_lab, predicted_lab)
         return float(difference**2)
 
-    starts = [_project_fractions(np.ones(len(materials)) / len(materials), caps)]
     rng = np.random.default_rng(73)
-    for _ in range(min(12, 3 * len(materials))):
-        starts.append(_project_fractions(rng.random(len(materials)), caps))
+    starts = [_project_fractions(np.ones(len(materials)) / len(materials), caps)]
+    starts.extend(
+        _project_fractions(rng.random(len(materials)), caps)
+        for _ in range(min(12, 3 * len(materials)))
+    )
     best = None
     best_loss = float("inf")
     for start in starts:
@@ -466,6 +470,9 @@ def metamerism_report(
         raise ValueError("Metamerism needs matching spectra and at least one illuminant")
     if not math.isfinite(tolerance) or tolerance < 0:
         raise ValueError("Metamerism tolerance must be finite and nonnegative")
+    names = [illuminant.name for illuminant in illuminants]
+    if len(names) != len(set(names)):
+        raise ValueError("Each illuminant in a metamerism report needs a distinct name")
     observer = observer or standard_observer_2deg()
     differences: dict[str, float] = {}
     for illuminant in illuminants:

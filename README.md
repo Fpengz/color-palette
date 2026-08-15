@@ -23,9 +23,29 @@ Pitch-ready product photos and a matching material inventory are available in [`
 - Matches a target from a user-defined material palette.
 - Observes per-material inventory limits, relative tint-strength parameters, and a total batch-mass constraint.
 - Shows ingredient mass, percentage, estimated cost, predicted color, and CIEDE2000 (ΔE00).
+- Explains any target it cannot match, attributing the color gap to the material set, the stocked quantities, the recipe constraints, or scale rounding.
 - The API also supports shop-floor constraints such as minimum doses, scale increments, locked or mutually exclusive materials, correction masses, and cost within a color tolerance.
 
 The mixing engine estimates opaque-material absorption/scattering with Kubelka–Munk K/S values, optimizes mass fractions against perceptual CIE Lab distance, and projects every candidate recipe onto the inventory-constrained mass simplex.
+
+Formulation is CPU-bound and GIL-bound, so each solve runs in a worker process
+and a semaphore bounds how many callers queue for one. Past that queue the API
+returns `503` with `Retry-After` rather than accepting work nobody is waiting
+for. On an 8-core machine, 24 concurrent worst-case solves went from 155s to 14s
+wall and from a 154s to a 10s median, and `/api/health` stayed at 5ms instead of
+degrading to 591ms.
+
+An optional Rust accelerator screens candidate ingredient sets. It is not
+required and is not built by default:
+
+```bash
+uv run python -m app.native   # needs cargo; safe to skip
+```
+
+It speeds up large palettes (2.6x on twelve materials) and leaves small ones
+unchanged. SLSQP still refines the recipe that gets shipped, so the accelerator
+cannot change the answer's quality -- only how quickly the search narrows to it.
+Without `cargo`, the SciPy path runs and remains the reference.
 
 All formulation results are marked `uncalibrated` and include model, optimizer,
 metric, provenance, uncertainty, and telemetry fields. Image-derived targets
@@ -65,6 +85,50 @@ curl -X POST http://127.0.0.1:8000/api/mix \
     }
   }'
 ```
+
+Every `/api/mix` response carries a `target_reachability` block. When the
+target cannot be matched it names the causes, each as a stable `code` plus
+`params` for localization and an English `message`:
+
+```json
+{
+  "status": "unreachable",
+  "summary": "This target is out of reach for the current inventory; the closest mix is 5.1 Delta E away.",
+  "reasons": [
+    {
+      "code": "inventory_limited",
+      "message": "The closest recipe needs more material than is in stock; running out costs 4.7 Delta E. Fully consumed: Carbon black.",
+      "params": {"penalty_delta_e": 4.68, "exhausted_materials": ["Carbon black"]}
+    }
+  ],
+  "suggestions": [{"code": "restock_materials", "message": "Restock Carbon black.", "params": {"materials": ["Carbon black"]}}],
+  "attribution": {
+    "material_gamut_delta_e": 0.4,
+    "inventory_penalty_delta_e": 4.68,
+    "constraint_penalty_delta_e": 0.0,
+    "dispensing_penalty_delta_e": 0.0
+  }
+}
+```
+
+Failures follow the same pattern. A rejected request returns `detail.message`
+in English plus a `reason_code` and `reason_params`, so a client can render the
+failure in its own language:
+
+```json
+{
+  "code": "formulation_failed",
+  "message": "Only 248.000 kg is available for a 500.000 kg batch",
+  "reason_code": "insufficient_inventory",
+  "reason_params": {"available_kg": 248.0, "batch_kg": 500.0}
+}
+```
+
+`attribution` re-solves the same target under progressively fewer restrictions,
+so it separates a color the materials simply cannot make from one blocked only
+by stock levels, shop-floor constraints, or the dispensing scale. Constraint
+combinations that no recipe can satisfy are rejected up front with the blocking
+rule named, rather than returning a bare search failure.
 
 Use `POST /api/target/validate` for source-specific target metadata. It
 accepts `spectrophotometer`, `lab`, `controlled_image`, and `hex` payloads and

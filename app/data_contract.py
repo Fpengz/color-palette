@@ -23,7 +23,7 @@ class MeasuredSpectrum(FiniteModel):
     units: str = "fraction"
 
     @model_validator(mode="after")
-    def validate_series(self) -> "MeasuredSpectrum":
+    def validate_series(self) -> MeasuredSpectrum:
         if len(self.wavelengths_nm) != len(self.reflectance):
             raise ValueError("Wavelengths and reflectance must have equal lengths")
         if any(not math.isfinite(value) for value in (*self.wavelengths_nm, *self.reflectance)):
@@ -68,7 +68,7 @@ class TargetMeasurement(FiniteModel):
         return parse_hex(value).hex if value is not None else None
 
     @model_validator(mode="after")
-    def source_matches_payload(self) -> "TargetMeasurement":
+    def source_matches_payload(self) -> TargetMeasurement:
         if self.source == "spectrophotometer" and self.spectrum is None:
             raise ValueError("Spectrophotometer targets require a measured spectrum")
         if self.source == "lab" and self.lab is None:
@@ -191,7 +191,7 @@ class MeasuredSampleRecord(FiniteModel):
         return value
 
     @model_validator(mode="after")
-    def validate_material_topology(self) -> "MeasuredSampleRecord":
+    def validate_material_topology(self) -> MeasuredSampleRecord:
         ingredient_names = set(self.ingredient_concentrations)
         if self.thickness_mm <= 0:
             raise ValueError("Sample thickness must be positive")
@@ -216,7 +216,7 @@ class MeasuredSampleRecord(FiniteModel):
         return self.model_dump_json(exclude_none=False, indent=2)
 
     @classmethod
-    def from_json(cls, payload: str | bytes | bytearray) -> "MeasuredSampleRecord":
+    def from_json(cls, payload: str | bytes | bytearray) -> MeasuredSampleRecord:
         return cls.model_validate_json(payload)
 
     def external_storage_payload(self) -> dict[str, Any]:

@@ -87,6 +87,88 @@ const translations = {
     cancelRegion: "Region selection cancelled. Choose a swatch or use the full-frame palette.",
     scoreClose: "Visually very close in this digital model.",
     scoreNoMatch: "The current inventory cannot reproduce the target exactly in this digital model.",
+    whyTitle: "WHY THIS TARGET IS NOT MATCHED",
+    whatToChange: "What to change",
+    statusApproximate: "Approximated to within ΔE00 {delta_e}, not matched.",
+    statusUnreachable: "Out of reach for this inventory — the closest mix is ΔE00 {delta_e} away.",
+    reason_target_lighter_than_inventory:
+      "No mixture of these materials can be this light. The target is L* {target_lightness}; the lightest reachable color is L* {inventory_max_lightness}.",
+    reason_target_darker_than_inventory:
+      "No mixture of these materials can be this dark. The target is L* {target_lightness}; the darkest reachable color is L* {inventory_min_lightness}.",
+    reason_target_more_saturated_than_inventory:
+      "The target is more saturated than these materials can mix to: chroma {target_chroma} requested, {reachable_chroma} reachable.",
+    reason_target_hue_not_covered:
+      "No material sits close enough to the target hue: the target is at {target_hue}°, the closest mix reaches {reachable_hue}°.",
+    reason_outside_material_gamut:
+      "Even with unlimited stock these materials only reach ΔE00 {material_gamut_delta_e} from the target.",
+    reason_inventory_limited:
+      "The closest recipe needs more material than is in stock; running out costs ΔE00 {penalty_delta_e}.",
+    reason_constraints_limited:
+      "The recipe constraints cost ΔE00 {penalty_delta_e} against an unconstrained mix ({active_constraints}).",
+    reason_dispensing_granularity:
+      "Rounding to the {scale_increment_kg} kg scale increment costs ΔE00 {penalty_delta_e}.",
+    reason_model_fit_limit:
+      "The closest mix is ΔE00 {delta_e} from the target; no single restriction explains the gap.",
+    suggestion_add_lighter_base: "Add a white or opaque base lighter than L* {required_lightness}.",
+    suggestion_add_darker_material: "Add a black or deep tinting material to the inventory.",
+    suggestion_add_saturated_pigment:
+      "Add a stronger pigment near hue {target_hue}°, or reduce the amount of uncolored base the recipe has to tint.",
+    suggestion_add_hue_pigment: "Add a pigment near hue {target_hue}°.",
+    suggestion_add_material: "Add a material closer to the target color.",
+    suggestion_restock_materials: "Restock {materials}.",
+    suggestion_restock_generic: "Increase the available material quantities.",
+    suggestion_relax_constraints: "Relax the {constraint} to let the optimizer use a closer mix.",
+    constraint_minimum_dose: "minimum dose",
+    constraint_ingredient_count: "ingredient count limit",
+    constraint_mutual_exclusivity: "mutually exclusive materials",
+    constraint_locked_materials: "locked materials",
+    constraint_correction_doses: "fixed correction doses",
+    suggestion_finer_scale: "Use a finer scale increment than {scale_increment_kg} kg, or mix a larger batch.",
+    exhaustedMaterials: "Fully consumed: {materials}.",
+    listSeparator: ", ",
+    error_empty_upload: "The uploaded image is empty.",
+    error_upload_too_large: "Image is larger than the 12 MB demo limit.",
+    error_undecodable_image: "Upload a valid PNG, JPG, or WebP image.",
+    error_unsupported_format: "Decoded image format {format} is not supported; use {supported}.",
+    error_image_too_large: "Image dimensions are too large.",
+    error_icc_conversion_failed: "The embedded ICC profile could not be converted to sRGB.",
+    error_no_visible_pixels: "The image contains no visible pixels.",
+    error_roi_incomplete: "A region needs x, y, width, and height.",
+    error_roi_invalid: "Region coordinates and dimensions must be positive.",
+    error_roi_outside_image: "The selected region must fit inside the uploaded image.",
+    error_batch_out_of_range: "Batch mass must be greater than 0 and no more than 1,000,000 kg.",
+    error_too_few_materials: "Add at least two available materials.",
+    error_invalid_material_values: "Mass and cost cannot be negative, and tint strength must be positive.",
+    error_insufficient_inventory: "Only {available_kg} kg is available for a {batch_kg} kg batch.",
+    error_duplicate_material_names: "Material names must be unique.",
+    error_invalid_scale_increment: "The scale increment must be positive and no greater than the batch.",
+    error_invalid_minimum_dose: "The minimum dose must be finite and nonnegative.",
+    error_invalid_ingredient_count: "The ingredient count limit is outside the available material range.",
+    error_invalid_color_tolerance: "The color tolerance must be finite and nonnegative.",
+    error_unknown_constraint_material: "A constraint references an unknown material: {material}.",
+    error_exclusive_group_too_small: "A mutually exclusive group needs at least two distinct materials.",
+    error_exclusive_groups_overlap: "Mutually exclusive groups cannot share a material.",
+    error_locked_materials_exclusive: "Locked materials cannot be mutually exclusive.",
+    error_correction_repeats_material: "A correction recipe cannot repeat a material.",
+    error_invalid_correction_mass: "Correction recipe masses must be finite and nonnegative.",
+    error_correction_not_on_scale: "Correction recipe masses must use the configured scale increment.",
+    error_correction_exceeds_inventory: "The correction recipe exceeds the inventory for {material}.",
+    error_correction_exceeds_batch: "The correction recipe exceeds the requested batch mass.",
+    error_correction_below_minimum: "The correction recipe is below the minimum dose for {material}.",
+    error_locked_material_needs_dose: "Locked material {material} needs a positive correction dose.",
+    error_ingredient_count_below_minimum:
+      "A {batch_kg} kg batch needs at least {minimum_materials} materials, but the recipe is limited to {count}: the {count} largest stocks hold only {held_kg} kg. Raise the ingredient count limit or restock.",
+    error_minimum_dose_strands_materials:
+      "A {minimum_dose_kg} kg minimum dose leaves only {dosable} of {total} materials usable, holding {usable_kg} kg for a {batch_kg} kg batch. Lower the minimum dose or restock.",
+    error_minimum_dose_exceeds_batch:
+      "A {minimum_dose_kg} kg minimum dose cannot fit a {batch_kg} kg batch: it needs at least {minimum_materials} materials, or {required_kg} kg of minimum doses. Lower the minimum dose or mix a larger batch.",
+    error_locked_minimum_exceeds_batch:
+      "The {locked} locked or correction materials each need at least {minimum_dose_kg} kg, which exceeds the {batch_kg} kg batch. Unlock a material or lower the minimum dose.",
+    error_exclusive_groups_starve_batch:
+      "The mutually exclusive groups leave only {usable_kg} kg usable for a {batch_kg} kg batch, because only one material per group may be dosed.",
+    error_no_feasible_combination: "No combination of materials satisfies the requested constraints.",
+    error_no_feasible_recipe: "The formulation optimizer could not find a workable recipe.",
+    error_formulation_busy: "The formulation engine is busy. Please try again in a few seconds.",
     estimated: "est.",
     estimatedCost: "est.",
     estimatedTotal: "EST.",
@@ -183,6 +265,88 @@ const translations = {
     cancelRegion: "已取消区域选择。请选择色块或使用完整画面色板。",
     scoreClose: "在此数字模型中，视觉上非常接近。",
     scoreNoMatch: "在此数字模型中，当前库存无法完全复现目标颜色。",
+    whyTitle: "为什么无法匹配该目标",
+    whatToChange: "改进建议",
+    statusApproximate: "只能近似到 ΔE00 {delta_e}，并非精确匹配。",
+    statusUnreachable: "当前库存无法达到该目标——最接近的混合色相差 ΔE00 {delta_e}。",
+    reason_target_lighter_than_inventory:
+      "这些材料的任何混合都无法这么浅。目标为 L* {target_lightness}，可达到的最浅颜色为 L* {inventory_max_lightness}。",
+    reason_target_darker_than_inventory:
+      "这些材料的任何混合都无法这么深。目标为 L* {target_lightness}，可达到的最深颜色为 L* {inventory_min_lightness}。",
+    reason_target_more_saturated_than_inventory:
+      "目标的饱和度超出这些材料的混合能力：需要彩度 {target_chroma}，可达到 {reachable_chroma}。",
+    reason_target_hue_not_covered:
+      "没有材料的色相足够接近目标：目标位于 {target_hue}°，最接近的混合色只能达到 {reachable_hue}°。",
+    reason_outside_material_gamut:
+      "即使库存不受限，这些材料与目标仍相差 ΔE00 {material_gamut_delta_e}。",
+    reason_inventory_limited:
+      "最接近的配方所需材料超出库存；库存不足导致 ΔE00 {penalty_delta_e} 的误差。",
+    reason_constraints_limited:
+      "与无约束混合相比，配方约束（{active_constraints}）导致 ΔE00 {penalty_delta_e} 的误差。",
+    reason_dispensing_granularity:
+      "按 {scale_increment_kg} kg 的称量步进取整导致 ΔE00 {penalty_delta_e} 的误差。",
+    reason_model_fit_limit:
+      "最接近的混合色与目标相差 ΔE00 {delta_e}；没有单一限制可以解释该差距。",
+    suggestion_add_lighter_base: "添加比 L* {required_lightness} 更浅的白色或遮盖性基料。",
+    suggestion_add_darker_material: "在库存中添加黑色或深色着色材料。",
+    suggestion_add_saturated_pigment:
+      "在 {target_hue}° 色相附近添加着色力更强的颜料，或减少配方需要着色的无色基料用量。",
+    suggestion_add_hue_pigment: "在 {target_hue}° 色相附近添加颜料。",
+    suggestion_add_material: "添加更接近目标颜色的材料。",
+    suggestion_restock_materials: "补充以下材料：{materials}。",
+    suggestion_restock_generic: "增加可用材料的库存量。",
+    suggestion_relax_constraints: "放宽“{constraint}”，让优化器可以使用更接近的混合方案。",
+    constraint_minimum_dose: "最小用量",
+    constraint_ingredient_count: "材料数量上限",
+    constraint_mutual_exclusivity: "互斥材料",
+    constraint_locked_materials: "锁定材料",
+    constraint_correction_doses: "固定校正用量",
+    suggestion_finer_scale: "使用比 {scale_increment_kg} kg 更精细的称量步进，或调制更大的批次。",
+    exhaustedMaterials: "已全部用完：{materials}。",
+    listSeparator: "、",
+    error_empty_upload: "上传的图片为空。",
+    error_upload_too_large: "图片超过 12 MB 的演示上限。",
+    error_undecodable_image: "请上传有效的 PNG、JPG 或 WebP 图片。",
+    error_unsupported_format: "不支持解码后的图片格式 {format}；请使用 {supported}。",
+    error_image_too_large: "图片尺寸过大。",
+    error_icc_conversion_failed: "无法将内嵌的 ICC 配置文件转换为 sRGB。",
+    error_no_visible_pixels: "图片中没有可见像素。",
+    error_roi_incomplete: "选择区域需要 x、y、宽度和高度。",
+    error_roi_invalid: "区域的坐标和尺寸必须为正数。",
+    error_roi_outside_image: "所选区域必须位于上传的图片范围内。",
+    error_batch_out_of_range: "批次质量必须大于 0 且不超过 1,000,000 kg。",
+    error_too_few_materials: "请至少添加两种可用材料。",
+    error_invalid_material_values: "质量和成本不能为负，着色强度必须为正数。",
+    error_insufficient_inventory: "库存仅有 {available_kg} kg，无法满足 {batch_kg} kg 的批次。",
+    error_duplicate_material_names: "材料名称不能重复。",
+    error_invalid_scale_increment: "称量步进必须为正数，且不得大于批次质量。",
+    error_invalid_minimum_dose: "最小用量必须为有限的非负数。",
+    error_invalid_ingredient_count: "材料数量上限超出了可用材料的范围。",
+    error_invalid_color_tolerance: "颜色容差必须为有限的非负数。",
+    error_unknown_constraint_material: "约束条件引用了未知材料：{material}。",
+    error_exclusive_group_too_small: "互斥分组至少需要两种不同的材料。",
+    error_exclusive_groups_overlap: "互斥分组之间不能包含相同的材料。",
+    error_locked_materials_exclusive: "锁定的材料不能互斥。",
+    error_correction_repeats_material: "校正配方中不能重复同一种材料。",
+    error_invalid_correction_mass: "校正配方的质量必须为有限的非负数。",
+    error_correction_not_on_scale: "校正配方的质量必须符合所设置的称量步进。",
+    error_correction_exceeds_inventory: "校正配方超出了 {material} 的库存。",
+    error_correction_exceeds_batch: "校正配方超出了请求的批次质量。",
+    error_correction_below_minimum: "校正配方低于 {material} 的最小用量。",
+    error_locked_material_needs_dose: "锁定材料 {material} 需要一个正的校正用量。",
+    error_ingredient_count_below_minimum:
+      "{batch_kg} kg 的批次至少需要 {minimum_materials} 种材料，但配方被限制为 {count} 种：库存最多的 {count} 种材料仅有 {held_kg} kg。请提高材料数量上限或补充库存。",
+    error_minimum_dose_strands_materials:
+      "{minimum_dose_kg} kg 的最小用量使 {total} 种材料中只有 {dosable} 种可用，共 {usable_kg} kg，无法满足 {batch_kg} kg 的批次。请降低最小用量或补充库存。",
+    error_minimum_dose_exceeds_batch:
+      "{minimum_dose_kg} kg 的最小用量无法容纳于 {batch_kg} kg 的批次：至少需要 {minimum_materials} 种材料，即 {required_kg} kg 的最小用量。请降低最小用量或调制更大的批次。",
+    error_locked_minimum_exceeds_batch:
+      "{locked} 种锁定或校正材料各自至少需要 {minimum_dose_kg} kg，已超出 {batch_kg} kg 的批次。请解锁材料或降低最小用量。",
+    error_exclusive_groups_starve_batch:
+      "互斥分组使可用材料仅剩 {usable_kg} kg，无法满足 {batch_kg} kg 的批次，因为每组只能使用一种材料。",
+    error_no_feasible_combination: "没有任何材料组合能够满足所设置的约束条件。",
+    error_no_feasible_recipe: "配方优化器未能找到可行的配方。",
+    error_formulation_busy: "配方引擎正忙，请稍等几秒后重试。",
     estimated: "预计",
     estimatedCost: "预计",
     estimatedTotal: "预计",
@@ -459,7 +623,14 @@ function showPalette(source) {
 
 function responseError(data, fallback) {
   if (Array.isArray(data.detail)) return data.detail[0]?.msg || fallback;
-  if (data.detail && typeof data.detail === "object") return data.detail.message || fallback;
+  if (data.detail && typeof data.detail === "object") {
+    // Prefer the localized template for the coded cause; the API message is
+    // always English and is only the fallback.
+    const key = `error_${data.detail.reason_code}`;
+    const template = translations[currentLocale][key] ?? translations.en[key];
+    if (template) return fillTemplate(template, data.detail.reason_params);
+    return data.detail.message || fallback;
+  }
   return data.detail || fallback;
 }
 
@@ -558,6 +729,56 @@ function qualityText(quality) {
   return t(key).toUpperCase();
 }
 
+function fillTemplate(template, params = {}) {
+  return template.replace(/\{(\w+)\}/g, (match, name) => {
+    const value = params[name];
+    if (value === undefined || value === null) return match;
+    return Array.isArray(value) ? value.join(t("listSeparator")) : String(value);
+  });
+}
+
+// Reasons carry a stable code plus parameters so both locales can explain the
+// same finding; the English message from the API is the fallback.
+function explanationText(entry) {
+  const key = `${entry.kind}_${entry.code}`;
+  const template = translations[currentLocale][key] ?? translations.en[key];
+  if (!template) return entry.message;
+  // Constraint identifiers arrive as codes so they can be named in either language.
+  const params = { ...entry.params };
+  if (Array.isArray(params.active_constraints)) {
+    params.active_constraints = params.active_constraints.map(code => t(`constraint_${code}`));
+  }
+  if (params.constraint) params.constraint = t(`constraint_${params.constraint}`);
+  return fillTemplate(template, params);
+}
+
+function renderReachability(data) {
+  const panel = $("#reachability");
+  const reachability = data.target_reachability;
+  if (!reachability || reachability.status === "reachable") {
+    panel.hidden = true;
+    panel.innerHTML = "";
+    return;
+  }
+  const statusKey = reachability.status === "unreachable" ? "statusUnreachable" : "statusApproximate";
+  const reasons = reachability.reasons.map(item => {
+    const exhausted = item.params && item.params.exhausted_materials;
+    const extra = exhausted && exhausted.length
+      ? ` ${fillTemplate(t("exhaustedMaterials"), { materials: exhausted.map(escapeHtml) })}`
+      : "";
+    return `<li>${escapeHtml(explanationText({ ...item, kind: "reason" }))}${extra}</li>`;
+  }).join("");
+  const suggestions = reachability.suggestions
+    .map(item => `<li>${escapeHtml(explanationText({ ...item, kind: "suggestion" }))}</li>`)
+    .join("");
+  panel.innerHTML = `
+    <div class="why-head"><span>${escapeHtml(t("whyTitle"))}</span></div>
+    <p class="why-status">${escapeHtml(fillTemplate(t(statusKey), { delta_e: reachability.delta_e.toFixed(2) }))}</p>
+    <ul class="why-list">${reasons}</ul>
+    ${suggestions ? `<div class="why-head"><span>${escapeHtml(t("whatToChange"))}</span></div><ul class="why-list why-fix">${suggestions}</ul>` : ""}`;
+  panel.hidden = false;
+}
+
 function renderResult(data, scroll = true) {
   lastResult = data;
   $("#targetVisual").style.background = data.target.hex;
@@ -565,6 +786,7 @@ function renderResult(data, scroll = true) {
   $("#deltaE").textContent = `${data.delta_e_metric === "CIEDE2000" ? "ΔE00" : "ΔE"} ${data.delta_e.toFixed(2)}`;
   $("#quality").textContent = qualityText(data.quality);
   $("#scoreHelp").textContent = data.delta_e < 2 ? t("scoreClose") : t("scoreNoMatch");
+  renderReachability(data);
   $("#recipe").innerHTML = data.recipe.filter(row => row.mass_kg > 0).map(row => `
     <div class="recipe-row"><i style="background:${row.color}"></i><div><b>${escapeHtml(row.name)}</b><span>${row.percentage.toFixed(3)}% · ${t("estimatedCost")} $${row.cost.toFixed(2)}</span></div><strong>${row.mass_kg.toFixed(4)} kg</strong></div>`).join("");
   const totalMass = data.total_mass_kg ?? data.batch_kg;

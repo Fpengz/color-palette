@@ -54,3 +54,17 @@ def test_calibration_set_updates_uncertainty_and_active_learning_is_diverse() ->
     assert calibrated.calibration_version == "cal-2"
     assert calibrated.conformal_radius == pytest.approx(0.32)
     assert selected == (1, 2)
+
+
+def test_active_learning_keeps_avoiding_already_measured_points() -> None:
+    candidates = np.array([[0.0, 0.0], [0.05, 0.0], [10.0, 10.0], [10.05, 10.0], [5.0, 5.0]])
+    uncertainty = np.ones(5)
+    existing = np.array([[0.0, 0.0]])
+
+    selected = select_active_learning_candidates(candidates, uncertainty, 3, existing)
+
+    # Candidates 0 and 1 sit on top of a sample the lab has already run. The
+    # existing set must keep steering every pick, not just the first one.
+    assert 0 not in selected
+    assert 1 not in selected
+    assert len(set(selected)) == 3

@@ -22,6 +22,32 @@ def test_extracts_dominant_color() -> None:
     assert len(result["palette"]) == 2
 
 
+def test_palette_never_repeats_a_swatch_when_the_image_has_few_colors() -> None:
+    image = Image.new("RGB", (64, 64), "#D92F26")
+    for x in range(32):
+        for y in range(64):
+            image.putpixel((x, y), (33, 78, 156))
+    output = BytesIO()
+    image.save(output, format="PNG")
+
+    result = extract_palette(output.getvalue(), color_count=5)
+    hexes = [color["hex"] for color in result["palette"]]
+
+    assert hexes == ["#D92F26", "#214E9C"] or hexes == ["#214E9C", "#D92F26"]
+    assert len(hexes) == len(set(hexes))
+    assert all(color["share"] > 0 for color in result["palette"])
+
+
+def test_single_color_image_returns_one_swatch() -> None:
+    output = BytesIO()
+    Image.new("RGB", (64, 64), "#D92F26").save(output, format="PNG")
+
+    result = extract_palette(output.getvalue(), color_count=5)
+
+    assert [color["hex"] for color in result["palette"]] == ["#D92F26"]
+    assert result["palette"][0]["share"] == 100.0
+
+
 def test_roi_analysis_keeps_full_frame_palette_and_uses_selected_source() -> None:
     image = Image.new("RGB", (100, 100), "#D8503F")
     for x in range(20):

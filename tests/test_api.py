@@ -22,7 +22,7 @@ def test_home_exposes_chinese_demo_locale() -> None:
 
     assert 'data-locale="zh"' in page
     assert 'href="?lang=zh"' in page
-    assert '/static/app.js?v=4' in page
+    assert '/static/app.js?v=5' in page
     assert "中文" in page
     assert "pageDescription" in page
 
@@ -191,6 +191,54 @@ def test_mix_accepts_operational_constraints_contract() -> None:
     data = response.json()
     assert data["constraints"]["scale_increment_kg"] == pytest.approx(0.1)
     assert any(row["name"] == "Red" and row["mass_kg"] >= 0.1 for row in data["recipe"])
+
+
+def test_mix_explains_a_target_the_inventory_cannot_reach() -> None:
+    response = client.post(
+        "/api/mix",
+        json={
+            "target": "#FFFFFF",
+            "batch_kg": 10,
+            "ingredients": [
+                {"name": "Charcoal", "color": "#404040", "available_kg": 10},
+                {"name": "Ink", "color": "#121416", "available_kg": 10, "strength": 10},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    reachability = response.json()["target_reachability"]
+    assert reachability["status"] == "unreachable"
+    assert reachability["summary"]
+    reason = reachability["reasons"][0]
+    # Every entry carries a stable code plus parameters so the interface can
+    # localize it, alongside a human-readable English message for API clients.
+    assert reason["code"] == "target_lighter_than_inventory"
+    assert reason["message"]
+    assert reason["params"]["inventory_max_lightness"] < 100
+    assert "add_lighter_base" in {item["code"] for item in reachability["suggestions"]}
+
+
+def test_mix_rejects_an_impossible_ingredient_limit_with_an_explanation() -> None:
+    response = client.post(
+        "/api/mix",
+        json={
+            "target": "#7A5544",
+            "batch_kg": 10,
+            "ingredients": [
+                {"name": "A", "color": "#EFE9DB", "available_kg": 3},
+                {"name": "B", "color": "#121416", "available_kg": 3},
+                {"name": "C", "color": "#D92F26", "available_kg": 3},
+                {"name": "D", "color": "#214E9C", "available_kg": 3},
+            ],
+            "constraints": {"preferred_ingredient_count": 2},
+        },
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "formulation_failed"
+    assert "needs at least 4 materials" in detail["message"]
 
 
 def test_mix_failure_returns_structured_telemetry_without_recipe_data() -> None:

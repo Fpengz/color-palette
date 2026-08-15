@@ -1,7 +1,7 @@
 # Chromix System Improvement Roadmap
 
 Status: software implementation complete; physical evidence pending
-Reviewed: 2026-08-14
+Reviewed: 2026-08-16
 Scope: color capture, material formulation, calibration, and production
 readiness
 
@@ -12,6 +12,12 @@ foundations for spectral calibration, versioned sample records, residual
 models, evaluation, active learning, and safe shadow/fallback serving. Real
 material calibration, held-out physical validation, and production sign-off
 remain external evidence gates, not claims that software tests can satisfy.
+
+The 2026-08-16 review additionally corrected numerical and selection defects in
+the optimizer, added a reachability explanation for targets that cannot be
+matched, bounded the combinatorial search, and reworked how solves are served.
+Those changes are described in the sections below; none of them advance the
+physical evidence gates, which are unchanged.
 
 ## Executive recommendation
 
@@ -87,27 +93,155 @@ The current implementation in `app/mixing.py`:
 1. converts each ingredient's entered sRGB color to three linear RGB values;
 2. treats those three values as reflectance channels and derives K/S ratios;
 3. multiplies each ingredient's K/S values by its scalar `strength` input;
-4. mixes the channel-wise K/S values with an opaque Kubelka–Munk approximation;
-5. minimizes squared CIELAB distance with SLSQP and deterministic multi-starts;
+4. mixes the channel-wise K/S values with an opaque Kubelka–Munk approximation,
+   inverting K/S as `1 / (1 + k + sqrt(k^2 + 2k))` because the textbook
+   `1 + k - sqrt(k^2 + 2k)` cancels catastrophically at the K/S a dark pigment
+   reaches;
+5. minimizes squared CIELAB distance with SLSQP, an analytic objective and
+   mass-balance Jacobian, and deterministic multi-starts, evaluating Lab
+   directly from reflectance rather than through an sRGB round trip;
 6. projects candidates onto a continuous capped simplex so fractions are
    nonnegative, within inventory caps, and sum to one; and
 7. requires successful optimizer termination or an explicitly bounded,
    near-feasible SLSQP iterate, rechecks feasibility, rounds a single
-   constrained dispensing vector to 0.0001 kg, and derives displayed mass,
-   percentage, and cost from that vector.
+   constrained dispensing vector to 0.0001 kg by largest-remainder
+   apportionment, and derives displayed mass, percentage, and cost from that
+   vector;
+8. ranks every candidate on the dose vector that would actually be dispensed,
+   so the reported CIEDE2000 describes the recipe the shop floor receives; and
+9. explains any target it cannot match, attributing the color gap to the
+   material set, the stocked quantities, the recipe constraints, or scale
+   rounding by re-solving under progressively fewer restrictions; and
+10. searches active ingredient sets exhaustively for small palettes and, beyond
+    that, screens them in a cheap-then-careful cascade before spending the full
+    multi-start budget on the finalists, reporting which strategy ran; and
+11. runs that screening pass in Rust when `app/native/` is built, while SLSQP
+    always refines the recipe that is actually dispensed.
+
+Active-set enumeration is combinatorial, so the search is deliberately bounded.
+A twelve-material minimum-dose request previously ran roughly 15,000 sub-solves
+and took minutes; it now completes in seconds. The response reports
+`search_strategy`, `candidate_sets_considered`, and `candidate_sets_refined` so
+a bounded search is visible rather than silent. Benchmarked against exhaustive
+search on a six-material palette the cascade costs about 0.6 Delta E on
+average, which is close to the multi-start's own run-to-run spread: 18, 12, 8,
+and 4 random starts scored 10.15, 10.88, 10.85, and 10.43 Delta E on the same
+targets. This objective is multimodal, so neither figure should be read as a
+converged optimum.
 
 The route/domain separation, explicit Pydantic bounds, deterministic
 initialization, inventory caps, and mass-simplex projection are foundations to
-retain. The current suite has 60 tests, including ROI/API source behavior,
+retain. The current suite has 113 tests, including ROI/API source behavior,
 decoded-format and metadata fixtures, CIEDE2000 reference pairs, optimizer
-failure handling, dispensing rounding, and a simple mass/inventory case. It
-still does not establish physical accuracy or calibration invariants needed
-for production use.
+failure handling, dispensing rounding, reachability attribution, numerical
+stability, analytic-gradient agreement, accelerator equivalence, admission
+control, and a simple mass/inventory case. It still does not establish
+physical accuracy or calibration invariants needed for production use.
+
+The reachability explanation is a statement about the digital model, not about
+a physical mix. Its lightness bound is exact within the model — a mixture's K/S
+is a convex combination of the material K/S values in every channel — but the
+model itself remains the uncalibrated RGB prototype described below.
 
 The current prototype also accepts operational recipe constraints through the
 API: minimum dose, dispensing increment, locked materials, mutually exclusive
 groups, preferred ingredient count, correction masses, and a cost objective
 within a declared color tolerance.
+
+### Serving the solver
+
+A solve holds the GIL for nearly all of its runtime, so threads cannot overlap
+two of them: eight concurrent worst-case solves measured 35.4s in eight threads
+against 29.0s run one after another, while eight processes finished in 8.1s.
+`app/main.py` therefore dispatches each solve to a worker process and bounds how
+many callers queue for one, shedding load with `503` and `Retry-After` beyond
+that. The limits are per process, so additional uvicorn workers scale with them.
+
+Measured on eight cores at 24 concurrent worst-case requests, against the
+original threadpool-only serving path:
+
+| | before | after |
+| --- | ---: | ---: |
+| single request | 5.6s | 2.2s |
+| 24 concurrent, wall | 155.0s | 14.2s |
+| 24 concurrent, median | 153.5s | 9.7s |
+| `/api/health` median | 591ms | 4.8ms |
+
+The median improves faster than the wall time because requests now complete in
+arrival order instead of all finishing together. Those figures fold in the Rust
+screening pass described below; process isolation alone accounted for 155s to
+34s of it.
+
+This bounds a single machine; it is not a substitute for rate limiting or a
+durable queue if formulation is ever exposed to untrusted callers.
+
+### Where solve time actually goes
+
+Measured by timing the objective in place on an eight-material constrained
+solve, rather than by profiler attribution:
+
+| | share of solve | per evaluation | solve |
+| --- | ---: | ---: | ---: |
+| NumPy objective | 34.3% | 37.6 us | 3.17s |
+| C objective (`app/native/`) | 8.6% | 6.4 us | 2.38s |
+
+A C objective alone was 5.9x faster in situ but only 1.33x end to end, because
+the objective was never the majority of the work. Most of the remainder is
+SciPy's Python wrapper around SLSQP: the Fortran core itself is roughly 14% of a
+solve, so about half the time is spent getting into and out of it, across some
+30,000 evaluations per request. Porting only the cost function is capped near
+1.5x by Amdahl's law, which is what was measured.
+
+`app/native/rust/` therefore moves an entire active set's multistart into one
+call -- objective, simplex projection, and optimizer together -- so those
+crossings collapse from tens of thousands to a few hundred. The optimizer there
+is a spectral projected gradient method rather than a port of SLSQP: the
+feasible set is only `sum(x) == 1` with box bounds, which is convex and cheap to
+project onto, so SLSQP's general nonlinear-constraint machinery is not needed.
+
+It is used for screening only. A first-order method is not universally
+equivalent: on a high-contrast set (a black at K/S ~ 5e5 beside a white at 0)
+the optimal fraction sits near 1e-5 and the objective is badly conditioned, and
+the crate settles for a worse stationary point -- Delta E 30.5 against SLSQP's
+21.0 on black-plus-white to mid-gray. Screening only has to rank active sets, so
+it takes that trade; refinement, which decides the recipe actually dispensed,
+stays on SLSQP and the shipped answer is unaffected.
+
+Measured on a constrained solve, scaling with palette size because screening is
+where the combinatorics live:
+
+| materials | SciPy only | Rust screening | speedup |
+| ---: | ---: | ---: | ---: |
+| 5 | 2.39s | 2.40s | 1.0x (exhaustive; no screening) |
+| 8 | 3.08s | 1.80s | 1.7x |
+| 10 | 3.34s | 1.78s | 1.9x |
+| 12 | 5.55s | 2.15s | 2.6x |
+
+Delta E was unchanged or better at every size. Across a twelve-target benchmark
+at eight materials it improved by 1.7 Delta E on average and was worse on none,
+because a screening pass that optimizes each start more thoroughly ranks the
+active sets better than the SciPy screen did.
+
+### Why not a GPU
+
+This workload is a poor fit, for reasons of shape rather than effort. A single
+objective evaluation touches 12 x 3 doubles -- under 300 bytes -- and costs well
+under a microsecond, against a kernel launch of roughly 5-10 microseconds, so
+per-evaluation dispatch would cost an order of magnitude more than the
+arithmetic it replaces. The evaluations within one start are also strictly
+sequential: each iterate depends on the previous gradient, so the inner loop
+cannot be batched. What is parallel -- the starts and the active sets -- numbers
+in the hundreds, far short of what fills a GPU, and each carries divergent
+control flow through its line search, which SIMT execution handles poorly.
+Double precision is not optional here either, given the K/S range that motivated
+the reflectance rewrite above, and consumer GPUs run fp64 at a fraction of fp32
+throughput.
+
+Process-level parallelism already exploits the available concurrency, and the
+CPU is not the limiting factor. A GPU becomes the right tool if the model moves
+to measured spectra -- 31 or more wavelengths instead of 3 channels, batched
+across many formulations at once -- or for training the residual model in the
+machine-learning plan below. Neither is the current bottleneck.
 
 ## Accuracy limitations and product boundaries
 

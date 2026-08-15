@@ -10,3 +10,6 @@ build/
 dist/
 *.egg-info/
 .DS_Store
+
+# Optional Rust accelerator, built locally via `python -m app.native`
+app/native/rust/target/

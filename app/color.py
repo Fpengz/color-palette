@@ -55,21 +55,33 @@ def linear_to_srgb(linear: np.ndarray) -> np.ndarray:
     return np.clip(np.rint(srgb * 255), 0, 255).astype(int)
 
 
-def rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
-    """Convert one or many sRGB colors (0..255) to CIE Lab (D65)."""
-    linear = srgb_to_linear(rgb)
-    xyz = linear @ np.array(
-        [[0.4124564, 0.2126729, 0.0193339],
-         [0.3575761, 0.7151522, 0.1191920],
-         [0.1804375, 0.0721750, 0.9503041]]
-    )
-    xyz = xyz / np.array([0.95047, 1.0, 1.08883])
-    delta = 6 / 29
-    f = np.where(xyz > delta**3, np.cbrt(xyz), xyz / (3 * delta**2) + 4 / 29)
+LINEAR_RGB_TO_XYZ = np.array(
+    [[0.4124564, 0.2126729, 0.0193339],
+     [0.3575761, 0.7151522, 0.1191920],
+     [0.1804375, 0.0721750, 0.9503041]]
+)
+D65_WHITE_XYZ = np.array([0.95047, 1.0, 1.08883])
+LAB_DELTA = 6 / 29
+
+
+def linear_to_lab(linear: np.ndarray) -> np.ndarray:
+    """Convert one or many linear-light RGB colors (0..1) to CIE Lab (D65).
+
+    Callers holding linear values — reflectance, for instance — should use this
+    directly rather than encoding to sRGB only for :func:`rgb_to_lab` to decode
+    it again; the round trip is an identity that costs two power operations.
+    """
+    xyz = np.asarray(linear, dtype=float) @ LINEAR_RGB_TO_XYZ / D65_WHITE_XYZ
+    f = np.where(xyz > LAB_DELTA**3, np.cbrt(xyz), xyz / (3 * LAB_DELTA**2) + 4 / 29)
     return np.stack(
         [116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])],
         axis=-1,
     )
+
+
+def rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
+    """Convert one or many sRGB colors (0..255) to CIE Lab (D65)."""
+    return linear_to_lab(srgb_to_linear(rgb))
 
 
 def delta_e(rgb_a: np.ndarray, rgb_b: np.ndarray) -> float:

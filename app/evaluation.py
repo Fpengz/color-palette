@@ -118,7 +118,7 @@ def evaluate_observations(
         or observation.constraint_violations < 0
         for observation in observations
     ):
-        raise ValueError("Evaluation observations contain invalid nonnegative metrics")
+        raise ValueError("Evaluation observations contain negative metrics")
     delta_e = np.asarray([observation.delta_e_00 for observation in observations])
     first_shot = np.asarray([observation.first_shot and observation.passed for observation in observations], dtype=float)
     rounds = np.asarray([observation.correction_rounds for observation in observations], dtype=float)

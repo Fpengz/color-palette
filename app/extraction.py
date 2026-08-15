@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image, ImageCms, ImageOps, UnidentifiedImageError
 
 from .color import Color, color_payload
+from .errors import CodedError
 
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
@@ -17,7 +18,7 @@ ANIMATION_POLICY = "first_frame_only"
 MODEL_VERSION = "rgb-kmeans-prototype-v1"
 
 
-class ImageAnalysisError(ValueError):
+class ImageAnalysisError(CodedError):
     pass
 
 
@@ -30,8 +31,15 @@ def _kmeans(pixels: np.ndarray, clusters: int, iterations: int = 24) -> tuple[np
     centroids = [pixels[np.argmin(((pixels - mean) ** 2).sum(axis=1))].astype(float)]
     while len(centroids) < clusters:
         distances = ((pixels[:, None, :] - np.stack(centroids)[None, :, :]) ** 2).sum(axis=2)
-        centroids.append(pixels[np.argmax(distances.min(axis=1))].astype(float))
+        nearest = distances.min(axis=1)
+        farthest = int(np.argmax(nearest))
+        # An image can hold fewer distinct colors than the requested cluster
+        # count; seeding past that point only duplicates existing centroids.
+        if nearest[farthest] <= 0:
+            break
+        centroids.append(pixels[farthest].astype(float))
     centroids = np.stack(centroids)
+    clusters = len(centroids)
 
     labels = np.zeros(count, dtype=int)
     for _ in range(iterations):
@@ -56,7 +64,7 @@ def _analyze_region(image: Image.Image, color_count: int) -> dict:
     rgba = np.asarray(analyzed).reshape(-1, 4)
     opaque = rgba[rgba[:, 3] >= 32, :3]
     if len(opaque) == 0:
-        raise ImageAnalysisError("The image contains no visible pixels")
+        raise ImageAnalysisError("The image contains no visible pixels", code="no_visible_pixels")
 
     # Bound CPU/memory while preserving a deterministic sample.
     if len(opaque) > 45_000:
@@ -69,6 +77,10 @@ def _analyze_region(image: Image.Image, color_count: int) -> dict:
     total = counts.sum()
     colors = []
     for index in order:
+        # Skip clusters that ended up with no members; they carry a stale seed
+        # color and would surface as duplicate 0% swatches.
+        if counts[index] == 0:
+            continue
         rgb = np.clip(np.rint(centroids[index]), 0, 255).astype(int)
         payload = color_payload(Color(*rgb.tolist()))
         payload["share"] = round(float(counts[index] / total * 100), 1)
@@ -77,7 +89,7 @@ def _analyze_region(image: Image.Image, color_count: int) -> dict:
     return {
         "width": analyzed.width,
         "height": analyzed.height,
-        "analyzed_pixels": int(len(opaque)),
+        "analyzed_pixels": len(opaque),
         "dominant": colors[0],
         "palette": colors,
     }
@@ -89,7 +101,12 @@ def _decode_image(data: bytes) -> tuple[Image.Image, dict]:
         image_format = (source.format or "").upper()
         if image_format not in SUPPORTED_FORMATS:
             supported = ", ".join(sorted(SUPPORTED_FORMATS))
-            raise ImageAnalysisError(f"Decoded image format {image_format or 'unknown'} is not supported; use {supported}")
+            raise ImageAnalysisError(
+                f"Decoded image format {image_format or 'unknown'} is not supported; use {supported}",
+                code="unsupported_format",
+                format=image_format or "unknown",
+                supported=sorted(SUPPORTED_FORMATS),
+            )
 
         frame_count = int(getattr(source, "n_frames", 1))
         animated = bool(getattr(source, "is_animated", False) and frame_count > 1)
@@ -97,7 +114,7 @@ def _decode_image(data: bytes) -> tuple[Image.Image, dict]:
             source.seek(0)
         image = ImageOps.exif_transpose(source)
         if image.width * image.height > MAX_PIXELS:
-            raise ImageAnalysisError("Image dimensions are too large")
+            raise ImageAnalysisError("Image dimensions are too large", code="image_too_large")
 
         rgba = image.convert("RGBA")
         icc_profile = image.info.get("icc_profile")
@@ -116,7 +133,7 @@ def _decode_image(data: bytes) -> tuple[Image.Image, dict]:
                 rgba = converted
                 icc_status = "converted_to_srgb"
             except (ImageCms.PyCMSError, OSError, ValueError) as exc:
-                raise ImageAnalysisError("The embedded ICC profile could not be converted to sRGB") from exc
+                raise ImageAnalysisError("The embedded ICC profile could not be converted to sRGB", code="icc_conversion_failed") from exc
 
         return rgba, {
             "format": image_format,
@@ -130,26 +147,26 @@ def _decode_image(data: bytes) -> tuple[Image.Image, dict]:
     except ImageAnalysisError:
         raise
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
-        raise ImageAnalysisError("Upload a valid PNG, JPG, or WebP image") from exc
+        raise ImageAnalysisError("Upload a valid PNG, JPG, or WebP image", code="undecodable_image") from exc
 
 
 def _validate_roi(roi: ROI, image_size: tuple[int, int]) -> ROI:
     if len(roi) != 4:
-        raise ImageAnalysisError("ROI must contain x, y, width, and height")
+        raise ImageAnalysisError("ROI must contain x, y, width, and height", code="roi_incomplete")
     x, y, width, height = roi
     image_width, image_height = image_size
     if x < 0 or y < 0 or width <= 0 or height <= 0:
-        raise ImageAnalysisError("ROI coordinates and dimensions must be positive")
+        raise ImageAnalysisError("ROI coordinates and dimensions must be positive", code="roi_invalid")
     if x + width > image_width or y + height > image_height:
-        raise ImageAnalysisError("ROI must fit inside the uploaded image")
+        raise ImageAnalysisError("ROI must fit inside the uploaded image", code="roi_outside_image")
     return roi
 
 
 def extract_palette(data: bytes, color_count: int = 5, roi: ROI | None = None) -> dict:
     if not data:
-        raise ImageAnalysisError("The uploaded image is empty")
+        raise ImageAnalysisError("The uploaded image is empty", code="empty_upload")
     if len(data) > MAX_UPLOAD_BYTES:
-        raise ImageAnalysisError("Image is larger than the 12 MB demo limit")
+        raise ImageAnalysisError("Image is larger than the 12 MB demo limit", code="upload_too_large")
 
     image, metadata = _decode_image(data)
 

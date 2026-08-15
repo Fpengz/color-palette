@@ -105,6 +105,14 @@ button { color: inherit; }
 .match-visual > div { position: relative; background: #d8503f; }.match-visual span { position: absolute; left: 10px; bottom: 8px; color: white; mix-blend-mode: difference; font: 500 8px "DM Mono"; }
 .match-score { display: grid; grid-template-columns: 115px 1fr; padding: 20px 0; border-bottom: 1px solid #393c36; gap: 20px; }
 .match-score span { display: block; color: #757870; font: 500 8px "DM Mono"; margin-bottom: 4px; }.match-score strong { font: 500 27px "DM Mono"; }.match-score p { color: #9b9e96; font-size: 10px; line-height: 1.5; margin: 0; }
+.reachability { padding: 14px 0 2px; border-bottom: 1px solid #393c36; }
+.reachability[hidden] { display: none; }
+.why-head { color: #757870; font: 500 8px "DM Mono"; margin-bottom: 6px; }.why-head:not(:first-child) { margin-top: 12px; }
+.why-status { color: #e0c07a; font-size: 11px; line-height: 1.5; margin: 0 0 8px; }
+.why-list { list-style: none; margin: 0; padding: 0; }
+.why-list li { position: relative; color: #9b9e96; font-size: 10px; line-height: 1.55; padding: 0 0 0 13px; margin-bottom: 5px; }
+.why-list li::before { content: "—"; position: absolute; left: 0; color: #6f726b; }
+.why-fix li { color: #b6bbae; }.why-fix li::before { content: "→"; color: #8f9a7e; }
 .recipe { min-height: 126px; padding: 12px 0; }.empty-result { color: #6f726b; font-size: 11px; display: grid; place-items: center; min-height: 100px; }
 .recipe-row { display: grid; grid-template-columns: 12px 1fr auto; gap: 10px; align-items: center; padding: 7px 0; }.recipe-row i { width: 10px; height: 10px; border-radius: 50%; }.recipe-row div { min-width: 0; }.recipe-row b { display: block; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.recipe-row span { color: #7c7f77; font: 400 8px "DM Mono"; }.recipe-row > strong { font: 500 12px "DM Mono"; }
 .result-total { border-top: 1px solid #4b4e47; border-bottom: 1px solid #4b4e47; padding: 15px 0; display: flex; align-items: center; justify-content: space-between; }.result-total span { color: #858880; font: 500 9px "DM Mono"; }.result-total b { font: 500 14px "DM Mono"; }

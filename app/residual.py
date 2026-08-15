@@ -193,10 +193,17 @@ def select_active_learning_candidates(
     remaining = set(range(len(values)))
     selected: list[int] = []
     for _ in range(batch_size):
+        # Diversity is measured against everything already measured *and*
+        # everything picked so far; dropping the existing set after the first
+        # pick re-selects points the lab has already run.
+        reference = (
+            np.vstack([normalized_existing, normalized[np.asarray(selected)]])
+            if selected
+            else normalized_existing
+        )
         best_index = None
         best_score = -float("inf")
         for index in sorted(remaining):
-            reference = normalized_existing if not selected else normalized[np.asarray(selected)]
             distance = float(np.min(np.linalg.norm(reference - normalized[index], axis=1))) if len(reference) else 1.0
             combined = float(scores[index]) + distance
             if combined > best_score:
