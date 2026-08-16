@@ -22,7 +22,7 @@ def test_home_exposes_chinese_demo_locale() -> None:
 
     assert 'data-locale="zh"' in page
     assert 'href="?lang=zh"' in page
-    assert '/static/app.js?v=5' in page
+    assert '/static/app.js?v=6' in page
     assert "中文" in page
     assert "pageDescription" in page
 

@@ -9,9 +9,9 @@ from app.mixing import (
     RecipeConstraints,
     _cached_ingredient_ks,
     _mixed_rgb,
-    _round_dispensing_masses,
     optimize_recipe,
 )
+from app.recipe_policy import round_dispensing_masses
 
 
 DEMO_INVENTORY = [
@@ -66,7 +66,7 @@ def test_optimizer_failure_is_not_returned_as_a_recipe(monkeypatch: pytest.Monke
     def failed_minimize(*args: object, **kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(success=False, x=np.array([0.5, 0.5]))
 
-    monkeypatch.setattr("app.mixing.minimize", failed_minimize)
+    monkeypatch.setattr("app.solver_backends.minimize", failed_minimize)
     ingredients = [
         Ingredient("Dark gray", parse_hex("#404040"), 100),
         Ingredient("White", parse_hex("#FFFFFF"), 100),
@@ -155,7 +155,7 @@ def test_cost_is_secondary_to_a_declared_color_tolerance() -> None:
 
 
 def test_dispensing_rounding_spreads_leftover_units_across_materials() -> None:
-    masses = _round_dispensing_masses(
+    masses = round_dispensing_masses(
         np.array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]),
         np.full(8, 10.0),
         4.0,
@@ -171,7 +171,7 @@ def test_dispensing_rounding_spreads_leftover_units_across_materials() -> None:
 
 def test_dispensing_rounding_stays_close_to_the_continuous_recipe() -> None:
     continuous = np.array([2.6, 2.6, 2.6, 1.6, 0.6])
-    masses = _round_dispensing_masses(continuous, np.full(5, 10.0), 10.0, 1.0)
+    masses = round_dispensing_masses(continuous, np.full(5, 10.0), 10.0, 1.0)
 
     assert masses.sum() == pytest.approx(10.0)
     assert np.max(np.abs(masses - continuous)) <= 1.0

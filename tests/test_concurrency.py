@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.errors import CodedError
 from app.extraction import ImageAnalysisError
+from app.formulation_runtime import formulation_runtime
 from app.mixing import Ingredient, RecipeConstraints, optimize_recipe
 
 
@@ -32,7 +33,7 @@ def test_formulation_concurrency_is_bounded() -> None:
 
 def test_saturated_queue_sheds_load_instead_of_piling_up(monkeypatch: pytest.MonkeyPatch) -> None:
     """Past the queue limit the API rejects rather than accepting unbounded work."""
-    monkeypatch.setattr(main, "_formulation_waiting", main.FORMULATION_QUEUE_LIMIT)
+    monkeypatch.setattr(formulation_runtime, "queue_limit", 0)
 
     response = client.post("/api/mix", json=REQUEST)
 
@@ -45,13 +46,13 @@ def test_saturated_queue_sheds_load_instead_of_piling_up(monkeypatch: pytest.Mon
 
 
 def test_waiting_counter_is_released_after_a_request() -> None:
-    before = main._formulation_waiting
+    before = formulation_runtime.waiting
 
     assert client.post("/api/mix", json=REQUEST).status_code == 200
     assert client.post("/api/mix", json={**REQUEST, "batch_kg": 1_000_000}).status_code == 400
 
     # A leak here would eventually wedge the endpoint at a permanent 503.
-    assert main._formulation_waiting == before
+    assert formulation_runtime.waiting == before
 
 
 @pytest.mark.parametrize(
@@ -93,8 +94,8 @@ def test_formulation_falls_back_when_no_worker_process_is_available(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Sandboxes that forbid subprocesses must still serve requests."""
-    monkeypatch.setattr(main, "_formulation_pool", None)
-    monkeypatch.setattr(main, "_pool_unavailable", True)
+    monkeypatch.setattr(formulation_runtime, "_pool", None)
+    monkeypatch.setattr(formulation_runtime, "_pool_unavailable", True)
 
     response = client.post("/api/mix", json=REQUEST)
 

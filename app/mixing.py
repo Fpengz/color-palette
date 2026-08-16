@@ -1,18 +1,22 @@
 from __future__ import annotations
 
-import ctypes
 import math
-from collections.abc import Callable
 from dataclasses import dataclass
-from decimal import Decimal
 from functools import lru_cache
-from itertools import combinations, product
 
 import numpy as np
 from scipy.optimize import minimize
 
 from .errors import CodedError
 from .native import load_solver
+from .recipe_policy import (
+    DISPENSING_UNIT_KG,
+    PreparedRecipePolicy,
+    RecipeConstraints,
+    _decimal_places,
+)
+from .solver_backends import SPARSITY_WEIGHT, optimize_starts
+from .solver_backends import select_optimizer_backend
 from .color import (
     D65_WHITE_XYZ,
     LAB_DELTA,
@@ -28,7 +32,6 @@ from .color import (
 )
 
 
-DISPENSING_UNIT_KG = 0.0001
 MODEL_VERSION = "digital-km-prototype-v1"
 CALIBRATION_STATUS = "uncalibrated"
 OPTIMIZER_VERSION = "slsqp-refine-rust-screen-v6"
@@ -59,8 +62,6 @@ HUE_TOLERANCE = 5.0
 _LAB_FROM_F = np.array([[0.0, 116.0, 0.0], [500.0, -500.0, 0.0], [0.0, 200.0, -200.0]])
 _LAB_OFFSET = np.array([-16.0, 0.0, 0.0])
 _KS_GRADIENT_FLOOR = 1e-9
-# Sparsity pressure: enough to prefer fewer materials, too small to bend the color fit.
-SPARSITY_WEIGHT = 0.002
 # Constraint identifiers travel as codes so an interface can localize them; the
 # English labels below are only for the message an API client reads directly.
 CONSTRAINT_LABELS = {
@@ -79,31 +80,6 @@ class Ingredient:
     available_kg: float
     cost_per_kg: float = 0.0
     strength: float = 1.0
-
-
-@dataclass(frozen=True)
-class RecipeConstraints:
-    """Optional shop-floor constraints applied to a recipe solve."""
-
-    minimum_dose_kg: float = 0.0
-    scale_increment_kg: float = DISPENSING_UNIT_KG
-    locked_materials: tuple[str, ...] = ()
-    mutually_exclusive: tuple[tuple[str, ...], ...] = ()
-    preferred_ingredient_count: int | None = None
-    correction_recipe: tuple[tuple[str, float], ...] = ()
-    color_tolerance_delta_e: float | None = None
-
-    @property
-    def has_operational_constraints(self) -> bool:
-        return any((
-            self.minimum_dose_kg > 0,
-            not math.isclose(self.scale_increment_kg, DISPENSING_UNIT_KG),
-            self.locked_materials,
-            self.mutually_exclusive,
-            self.preferred_ingredient_count is not None,
-            self.correction_recipe,
-            self.color_tolerance_delta_e is not None,
-        ))
 
 
 def _project_capped_simplex(values: np.ndarray, caps: np.ndarray, total: float = 1.0) -> np.ndarray:
@@ -130,305 +106,6 @@ def _project_capped_simplex(values: np.ndarray, caps: np.ndarray, total: float =
             raise ValueError("Available ingredient mass is insufficient for this batch")
         result[candidates[0]] += residual
     return result
-
-
-def _decimal_places(value: float) -> int:
-    exponent = Decimal(str(value)).as_tuple().exponent
-    return max(0, -exponent)
-
-
-def _round_dispensing_masses(
-    masses: np.ndarray,
-    available: np.ndarray,
-    batch_kg: float,
-    dispensing_unit_kg: float = DISPENSING_UNIT_KG,
-) -> np.ndarray:
-    """Round a continuous recipe to a feasible, mass-conserving dose vector."""
-    if not math.isfinite(dispensing_unit_kg) or dispensing_unit_kg <= 0:
-        raise ValueError("Dispensing precision must be positive and finite")
-    precision = _decimal_places(dispensing_unit_kg)
-    rounded_batch = round(batch_kg, precision)
-    if not math.isclose(batch_kg, rounded_batch, rel_tol=0.0, abs_tol=dispensing_unit_kg / 1000):
-        raise ValueError(f"Batch mass must be representable to the {dispensing_unit_kg:g} kg dispensing precision")
-
-    target_units = round(rounded_batch / dispensing_unit_kg)
-    cap_units = np.floor(available / dispensing_unit_kg + 1e-9).astype(np.int64)
-    if int(cap_units.sum()) < target_units:
-        raise ValueError(f"Inventory cannot satisfy the {dispensing_unit_kg:g} kg dispensing precision")
-
-    raw_units = np.clip(masses / dispensing_unit_kg, 0.0, None)
-    units = np.minimum(np.floor(raw_units + 1e-9).astype(np.int64), cap_units)
-    remaining = target_units - int(units.sum())
-    # Largest-remainder apportionment: hand out (or take back) one unit at a time
-    # to the material with the biggest shortfall (or excess). Giving a single
-    # material every leftover unit at once would distort the recipe badly.
-    while remaining > 0:
-        eligible = np.flatnonzero(cap_units - units > 0)
-        if eligible.size == 0:
-            raise ValueError(f"Inventory cannot satisfy the {dispensing_unit_kg:g} kg dispensing precision")
-        shortfall = raw_units[eligible] - units[eligible]
-        order = eligible[np.lexsort((eligible, -shortfall))]
-        chosen = order[: min(remaining, eligible.size)]
-        units[chosen] += 1
-        remaining -= len(chosen)
-    while remaining < 0:
-        eligible = np.flatnonzero(units > 0)
-        if eligible.size == 0:
-            raise ValueError("Unable to conserve batch mass after dispensing rounding")
-        excess = units[eligible] - raw_units[eligible]
-        order = eligible[np.lexsort((eligible, -excess))]
-        chosen = order[: min(-remaining, eligible.size)]
-        units[chosen] -= 1
-        remaining += len(chosen)
-
-    result = units.astype(float) * dispensing_unit_kg
-    if not math.isclose(float(result.sum()), rounded_batch, rel_tol=0.0, abs_tol=1e-9):
-        raise ValueError("Unable to conserve batch mass after dispensing rounding")
-    if np.any(result > available + 1e-9):
-        raise ValueError("Rounded recipe exceeds available inventory")
-    return result
-
-
-def _validate_dispensed_constraints(
-    masses: np.ndarray,
-    ingredients: list[Ingredient],
-    batch_kg: float,
-    prepared_constraints: dict,
-    preferred_ingredient_count: int | None,
-) -> None:
-    """Recheck every shop-floor constraint against the actual dose vector."""
-    scale = prepared_constraints["scale"]
-    if not math.isclose(float(masses.sum()), batch_kg, rel_tol=0.0, abs_tol=scale / 1000):
-        raise ValueError("Dispensed recipe does not conserve the requested batch mass")
-    if any(
-        not math.isclose(mass / scale, round(mass / scale), rel_tol=0.0, abs_tol=1e-8)
-        for mass in masses
-    ):
-        raise ValueError("Dispensed recipe is not representable on the configured scale")
-    if np.any(masses > np.asarray([item.available_kg for item in ingredients]) + 1e-9):
-        raise ValueError("Rounded recipe exceeds available inventory")
-
-    minimum = prepared_constraints["minimum"]
-    active = {index for index, mass in enumerate(masses) if mass > scale / 1000}
-    for index in active:
-        required = minimum
-        if index in prepared_constraints["locked"] and not prepared_constraints["fixed"].get(index):
-            required = max(required, scale)
-        if masses[index] + scale / 1000 < required:
-            raise ValueError("Rounded recipe violates a minimum material dose")
-    for index, mass in prepared_constraints["fixed"].items():
-        if not math.isclose(masses[index], mass, rel_tol=0.0, abs_tol=scale / 1000):
-            raise ValueError("Rounded recipe changes a fixed correction dose")
-    for group in prepared_constraints["groups"]:
-        if len(active & group) > 1:
-            raise ValueError("Rounded recipe violates mutually exclusive materials")
-    if preferred_ingredient_count is not None and len(active) > preferred_ingredient_count:
-        raise ValueError("Rounded recipe exceeds the preferred ingredient count")
-
-
-def _constraint_indices(
-    ingredients: list[Ingredient],
-    constraints: RecipeConstraints,
-    batch_kg: float,
-) -> dict:
-    names = [item.name.casefold() for item in ingredients]
-    if len(names) != len(set(names)):
-        raise CodedError("Material names must be unique", code="duplicate_material_names")
-    index_by_name = {name: index for index, name in enumerate(names)}
-    scale = constraints.scale_increment_kg
-    if not math.isfinite(scale) or scale <= 0 or scale > batch_kg:
-        raise CodedError("Scale increment must be positive, finite, and no greater than the batch", code="invalid_scale_increment")
-    minimum = constraints.minimum_dose_kg
-    if not math.isfinite(minimum) or minimum < 0:
-        raise CodedError("Minimum dose must be finite and nonnegative", code="invalid_minimum_dose")
-    if constraints.preferred_ingredient_count is not None and not 1 <= constraints.preferred_ingredient_count <= len(ingredients):
-        raise CodedError("Preferred ingredient count is outside the available material range", code="invalid_ingredient_count")
-    if constraints.color_tolerance_delta_e is not None and (
-        not math.isfinite(constraints.color_tolerance_delta_e) or constraints.color_tolerance_delta_e < 0
-    ):
-        raise CodedError("Color tolerance must be finite and nonnegative", code="invalid_color_tolerance")
-
-    def resolve_name(name: str) -> int:
-        index = index_by_name.get(name.strip().casefold())
-        if index is None:
-            raise CodedError(f"Constraint references unknown material {name!r}", code="unknown_constraint_material", material=name)
-        return index
-
-    locked = {resolve_name(name) for name in constraints.locked_materials}
-    groups: list[set[int]] = []
-    for group in constraints.mutually_exclusive:
-        resolved = {resolve_name(name) for name in group}
-        if len(resolved) < 2:
-            raise CodedError("Mutually exclusive groups need at least two distinct materials", code="exclusive_group_too_small")
-        if any(resolved & existing for existing in groups):
-            raise CodedError("Mutually exclusive groups cannot overlap", code="exclusive_groups_overlap")
-        if len(resolved & locked) > 1:
-            raise CodedError("Locked materials cannot be mutually exclusive", code="locked_materials_exclusive")
-        groups.append(resolved)
-
-    fixed: dict[int, float] = {}
-    for name, mass in constraints.correction_recipe:
-        index = resolve_name(name)
-        if index in fixed:
-            raise CodedError("Correction recipe cannot repeat a material", code="correction_repeats_material")
-        if not math.isfinite(mass) or mass < 0:
-            raise CodedError("Correction recipe masses must be finite and nonnegative", code="invalid_correction_mass")
-        if not math.isclose(mass / scale, round(mass / scale), rel_tol=0.0, abs_tol=1e-8):
-            raise CodedError("Correction recipe masses must use the configured scale increment", code="correction_not_on_scale")
-        if mass > ingredients[index].available_kg + 1e-9:
-            raise CodedError(f"Correction recipe exceeds inventory for {ingredients[index].name}", code="correction_exceeds_inventory", material=ingredients[index].name)
-        fixed[index] = mass
-    if sum(fixed.values()) > batch_kg + 1e-9:
-        raise CodedError("Correction recipe exceeds the requested batch mass", code="correction_exceeds_batch")
-
-    # A dose must be measurable on the configured scale; round the lower bound up.
-    minimum = math.ceil((max(minimum, scale) / scale) - 1e-10) * scale if minimum > 0 else 0.0
-    for index, mass in fixed.items():
-        if 0 < mass < minimum - scale / 1000:
-            raise CodedError(f"Correction recipe is below the minimum dose for {ingredients[index].name}", code="correction_below_minimum", material=ingredients[index].name)
-        if index in locked and mass <= 0:
-            raise CodedError(f"Locked material {ingredients[index].name} needs a positive correction dose", code="locked_material_needs_dose", material=ingredients[index].name)
-    return {
-        "index_by_name": index_by_name,
-        "locked": locked,
-        "groups": groups,
-        "fixed": fixed,
-        "minimum": minimum,
-        "scale": scale,
-    }
-
-
-def _assert_constraints_are_satisfiable(
-    ingredients: list[Ingredient],
-    constraints: RecipeConstraints,
-    prepared: dict,
-    batch_kg: float,
-) -> None:
-    """Reject constraint sets no recipe can satisfy, naming the blocking rule.
-
-    These are cheap capacity arguments that run before the optimizer, so an
-    impossible request explains itself instead of returning a bare search
-    failure after every candidate has been tried.
-    """
-    stocks = sorted((item.available_kg for item in ingredients), reverse=True)
-    running = 0.0
-    minimum_materials = len(stocks)
-    for position, stock in enumerate(stocks, start=1):
-        running += stock
-        if running >= batch_kg - 1e-9:
-            minimum_materials = position
-            break
-
-    count = constraints.preferred_ingredient_count
-    if count is not None and count < minimum_materials:
-        held = sum(stocks[:count])
-        raise CodedError(
-            f"A {batch_kg:g} kg batch needs at least {minimum_materials} materials, but the recipe is "
-            f"limited to {count}: the {count} largest stocks hold only {held:.3f} kg. "
-            f"Raise the ingredient count limit or restock.",
-            code="ingredient_count_below_minimum",
-            batch_kg=batch_kg,
-            minimum_materials=minimum_materials,
-            count=count,
-            held_kg=round(held, 3),
-        )
-
-    minimum = prepared["minimum"]
-    if minimum > 0:
-        # A material stocked below the minimum dose can never be used at all.
-        dosable = [item for item in ingredients if item.available_kg >= minimum - 1e-9]
-        usable = sum(item.available_kg for item in dosable)
-        if usable < batch_kg - 1e-9:
-            raise CodedError(
-                f"A {minimum:g} kg minimum dose leaves only {len(dosable)} of {len(ingredients)} materials "
-                f"usable, holding {usable:.3f} kg for a {batch_kg:g} kg batch. "
-                f"Lower the minimum dose or restock.",
-                code="minimum_dose_strands_materials",
-                minimum_dose_kg=minimum,
-                dosable=len(dosable),
-                total=len(ingredients),
-                usable_kg=round(usable, 3),
-                batch_kg=batch_kg,
-            )
-    if minimum > 0 and minimum * minimum_materials > batch_kg + 1e-9:
-        raise CodedError(
-            f"A {minimum:g} kg minimum dose cannot fit a {batch_kg:g} kg batch: it needs at least "
-            f"{minimum_materials} materials, or {minimum * minimum_materials:g} kg of minimum doses. "
-            f"Lower the minimum dose or mix a larger batch.",
-            code="minimum_dose_exceeds_batch",
-            minimum_dose_kg=minimum,
-            minimum_materials=minimum_materials,
-            required_kg=round(minimum * minimum_materials, 3),
-            batch_kg=batch_kg,
-        )
-
-    required = prepared["locked"] | set(prepared["fixed"])
-    if minimum > 0 and len(required) * minimum > batch_kg + 1e-9:
-        raise CodedError(
-            f"The {len(required)} locked or correction materials each need at least {minimum:g} kg, "
-            f"which exceeds the {batch_kg:g} kg batch. Unlock a material or lower the minimum dose.",
-            code="locked_minimum_exceeds_batch",
-            locked=len(required),
-            minimum_dose_kg=minimum,
-            batch_kg=batch_kg,
-        )
-
-    if prepared["groups"]:
-        grouped = set().union(*prepared["groups"])
-        reachable = sum(
-            item.available_kg for index, item in enumerate(ingredients) if index not in grouped
-        ) + sum(max(ingredients[index].available_kg for index in group) for group in prepared["groups"])
-        if reachable < batch_kg - 1e-9:
-            raise CodedError(
-                f"The mutually exclusive groups leave only {reachable:.3f} kg usable for a "
-                f"{batch_kg:g} kg batch, because only one material per group may be dosed.",
-                code="exclusive_groups_starve_batch",
-                usable_kg=round(reachable, 3),
-                batch_kg=batch_kg,
-            )
-
-
-def _candidate_active_sets(
-    ingredient_count: int,
-    required: set[int],
-    groups: list[set[int]],
-    preferred_count: int | None,
-    minimum_dose: float,
-) -> list[tuple[int, ...]]:
-    grouped = set().union(*groups) if groups else set()
-    ungrouped = [index for index in range(ingredient_count) if index not in grouped]
-    group_options: list[list[int | None]] = []
-    for group in groups:
-        locked = sorted(group & required)
-        group_options.append(locked if locked else [None, *sorted(group)])
-
-    max_count = preferred_count
-    if max_count is None and minimum_dose > 0:
-        # Keep the combinatorial search bounded while favoring practical sparse
-        # recipes, but never below the count the caller already pinned down:
-        # locked and correction materials are always part of the recipe.
-        max_count = min(max(4, len(required)), ingredient_count)
-    candidates: set[tuple[int, ...]] = set()
-    for choices in product(*group_options) if group_options else [()]:
-        selected = set(required)
-        selected.update(choice for choice in choices if choice is not None)
-        if any(len(selected & group) > 1 for group in groups):
-            continue
-        optional = [index for index in ungrouped if index not in selected]
-        if max_count is None:
-            candidates.add(tuple(sorted(selected | set(optional))))
-            continue
-        remaining = max_count - len(selected)
-        if remaining < 0:
-            continue
-        for size in range(remaining + 1):
-            for additions in combinations(optional, size):
-                candidates.add(tuple(sorted(selected | set(additions))))
-
-    if not candidates:
-        raise CodedError("No ingredient combination satisfies the requested constraints", code="no_feasible_combination")
-    # Prefer more ingredients when there is no minimum dose, then stable lexical order.
-    return sorted(candidates, key=lambda item: (-len(item), item))
 
 
 def _reflectance_to_ks(reflectance: np.ndarray) -> np.ndarray:
@@ -523,91 +200,6 @@ def _color_loss_and_gradient(
     return float(difference @ difference), ingredient_ks @ gradient_ks
 
 
-def _optimize_starts(
-    starts: np.ndarray,
-    lower: np.ndarray,
-    upper: np.ndarray,
-    ingredient_ks: np.ndarray,
-    target_lab: np.ndarray,
-    max_iter: int,
-    loss_and_gradient: Callable[[np.ndarray], tuple[float, np.ndarray]],
-    solver: object | None,
-) -> list[tuple[np.ndarray, str | None]]:
-    """Run every start for one active set. Yields (fractions, outcome) pairs.
-
-    ``outcome`` is ``"converged"``, ``"iterate"`` for a usable but unconverged
-    point, or ``None`` to reject. The caller reprojects, rounds, and revalidates
-    every result either way, so a backend can only affect recipe quality, never
-    feasibility.
-
-    Two backends produce identical-shaped output: the Rust crate, which runs the
-    whole multistart in one call, and SciPy's SLSQP, which is the reference.
-    """
-    if solver is not None:
-        count = starts.shape[1]
-        material_ks = np.ascontiguousarray(ingredient_ks, dtype=np.float64)
-        target = np.ascontiguousarray(target_lab, dtype=np.float64)
-        low = np.ascontiguousarray(lower, dtype=np.float64)
-        high = np.ascontiguousarray(upper, dtype=np.float64)
-        seeds = np.ascontiguousarray(starts, dtype=np.float64)
-        solved = np.empty_like(seeds)
-        losses = np.empty(starts.shape[0], dtype=np.float64)
-        converged = np.empty(starts.shape[0], dtype=np.int32)
-        status = solver.solve_starts(
-            ctypes.c_void_p(material_ks.ctypes.data),
-            ctypes.c_void_p(target.ctypes.data),
-            ctypes.c_void_p(low.ctypes.data),
-            ctypes.c_void_p(high.ctypes.data),
-            ctypes.c_void_p(seeds.ctypes.data),
-            count,
-            starts.shape[0],
-            max_iter,
-            SPARSITY_WEIGHT,
-            ctypes.c_void_p(solved.ctypes.data),
-            ctypes.c_void_p(losses.ctypes.data),
-            ctypes.c_void_p(converged.ctypes.data),
-        )
-        if status == 0:
-            return [
-                (solved[index], "converged" if converged[index] else "iterate")
-                for index in range(starts.shape[0])
-            ]
-        # Fall through to SciPy if the crate rejected the arguments.
-
-    bounds = [(float(low), float(high)) for low, high in zip(lower, upper, strict=True)]
-    ones = np.ones(starts.shape[1])
-    equality = {
-        "type": "eq",
-        "fun": lambda values: float(values.sum() - 1.0),
-        "jac": lambda values: ones,
-    }
-    results: list[tuple[np.ndarray, str | None]] = []
-    for start in starts:
-        result = minimize(
-            loss_and_gradient,
-            start,
-            method="SLSQP",
-            jac=True,
-            bounds=bounds,
-            constraints=equality,
-            options={"maxiter": max_iter, "ftol": 1e-11, "disp": False},
-        )
-        if result.success:
-            results.append((result.x, "converged"))
-            continue
-        # Status 8 is a line-search stall: the iterate is often still usable, so
-        # keep it if it is finite and inside the feasible box.
-        usable = (
-            getattr(result, "status", None) == 8
-            and np.all(np.isfinite(result.x))
-            and abs(float(result.x.sum()) - 1.0) <= 1e-3
-            and np.all(result.x >= lower - 1e-6)
-            and np.all(result.x <= upper + 1e-6)
-        )
-        results.append((result.x, "iterate") if usable else (result.x, None))
-    return results
-
-
 def _chroma_hue(lab: np.ndarray) -> tuple[float, float]:
     """Return CIELAB chroma and hue angle in degrees."""
     chroma = math.hypot(float(lab[1]), float(lab[2]))
@@ -692,7 +284,7 @@ def _explain_reachability(
     ingredients: list[Ingredient],
     caps: np.ndarray,
     constraints: RecipeConstraints,
-    prepared_constraints: dict,
+    prepared_constraints: PreparedRecipePolicy,
     batch_kg: float,
 ) -> dict:
     """Explain how close the target is and, when it is not, what is blocking it.
@@ -866,15 +458,15 @@ def _explain_reachability(
     # two independent solves, so there is nothing to report.
     if constraint_penalty >= SIGNIFICANT_PENALTY_DELTA_E and constraints.has_operational_constraints:
         active = []
-        if prepared_constraints["minimum"] > 0:
+        if prepared_constraints.minimum > 0:
             active.append("minimum_dose")
         if constraints.preferred_ingredient_count is not None:
             active.append("ingredient_count")
-        if prepared_constraints["groups"]:
+        if prepared_constraints.groups:
             active.append("mutual_exclusivity")
-        if prepared_constraints["locked"]:
+        if prepared_constraints.locked:
             active.append("locked_materials")
-        if prepared_constraints["fixed"]:
+        if prepared_constraints.fixed:
             active.append("correction_doses")
         english = ", ".join(CONSTRAINT_LABELS[code] for code in active)
         add(
@@ -896,7 +488,7 @@ def _explain_reachability(
 
     # 4. The scale cannot dispense the doses the fit needs.
     if rounding_penalty >= SIGNIFICANT_PENALTY_DELTA_E:
-        scale = prepared_constraints["scale"]
+        scale = prepared_constraints.scale
         add(
             reasons,
             "dispensing_granularity",
@@ -957,7 +549,7 @@ def optimize_recipe(
         raise CodedError("Mass and cost cannot be negative, and tint strength must be positive", code="invalid_material_values")
 
     constraints = constraints or RecipeConstraints()
-    prepared_constraints = _constraint_indices(ingredients, constraints, batch_kg)
+    prepared_constraints = PreparedRecipePolicy.from_constraints(ingredients, constraints, batch_kg)
     target = parse_hex(target_hex)
     caps = np.array([item.available_kg / batch_kg for item in ingredients], dtype=float)
     if caps.sum() < 1 - 1e-9:
@@ -967,7 +559,7 @@ def optimize_recipe(
             available_kg=round(sum(i.available_kg for i in ingredients), 3),
             batch_kg=batch_kg,
         )
-    _assert_constraints_are_satisfiable(ingredients, constraints, prepared_constraints, batch_kg)
+    prepared_constraints.assert_satisfiable(ingredients, constraints, batch_kg)
 
     ingredient_ks = np.asarray(
         [_cached_ingredient_ks(item.color.rgb, item.strength) for item in ingredients],
@@ -994,16 +586,15 @@ def optimize_recipe(
     candidate_sets = (
         [tuple(range(len(ingredients)))]
         if not constraints.has_operational_constraints
-        else _candidate_active_sets(
+        else prepared_constraints.candidate_active_sets(
             len(ingredients),
-            set(prepared_constraints["locked"]) | set(prepared_constraints["fixed"]),
-            prepared_constraints["groups"],
             constraints.preferred_ingredient_count,
-            prepared_constraints["minimum"],
         )
     )
     rng = np.random.default_rng(73)
     solver = load_solver()
+    reference_backend = select_optimizer_backend()
+    screening_backend = select_optimizer_backend(solver)
     available_kg = np.array([item.available_kg for item in ingredients], dtype=float)
     costs = np.array([item.cost_per_kg for item in ingredients], dtype=float)
     candidate_attempts = 0
@@ -1029,17 +620,17 @@ def optimize_recipe(
         for index in range(len(ingredients)):
             if index not in active:
                 upper[index] = 0.0
-        for index, mass in prepared_constraints["fixed"].items():
+        for index, mass in prepared_constraints.fixed.items():
             fraction = mass / batch_kg
             lower[index] = fraction
             upper[index] = fraction
-        locked_lower = prepared_constraints["minimum"] or prepared_constraints["scale"]
-        for index in prepared_constraints["locked"]:
-            if index not in prepared_constraints["fixed"]:
+        locked_lower = prepared_constraints.minimum or prepared_constraints.scale
+        for index in prepared_constraints.locked:
+            if index not in prepared_constraints.fixed:
                 lower[index] = locked_lower / batch_kg
         for index in active:
-            if index not in prepared_constraints["fixed"] and index not in prepared_constraints["locked"]:
-                lower[index] = prepared_constraints["minimum"] / batch_kg
+            if index not in prepared_constraints.fixed and index not in prepared_constraints.locked:
+                lower[index] = prepared_constraints.minimum / batch_kg
         if np.any(lower > upper + 1e-9) or lower.sum() > 1 + 1e-9 or upper.sum() < 1 - 1e-9:
             return None
 
@@ -1068,7 +659,7 @@ def optimize_recipe(
                 return None
 
         best_delta_e: float | None = None
-        for solved, accepted in _optimize_starts(
+        for solved, accepted in optimize_starts(
             np.asarray(starts, dtype=float),
             lower,
             upper,
@@ -1076,7 +667,7 @@ def optimize_recipe(
             target_lab,
             maxiter,
             loss_and_gradient,
-            solver if accelerated else None,
+            screening_backend if accelerated else reference_backend,
         ):
             candidate_attempts += 1
             if not accepted or not np.all(np.isfinite(solved)):
@@ -1094,17 +685,15 @@ def optimize_recipe(
             ):
                 continue
             try:
-                current_masses = _round_dispensing_masses(
+                current_masses = prepared_constraints.round_masses(
                     current * batch_kg,
                     available_kg,
                     batch_kg,
-                    prepared_constraints["scale"],
                 )
-                _validate_dispensed_constraints(
+                prepared_constraints.validate_masses(
                     current_masses,
                     ingredients,
                     batch_kg,
-                    prepared_constraints,
                     constraints.preferred_ingredient_count,
                 )
             except ValueError:
@@ -1209,7 +798,7 @@ def optimize_recipe(
         prepared_constraints,
         batch_kg,
     )
-    precision = _decimal_places(prepared_constraints["scale"])
+    precision = _decimal_places(prepared_constraints.scale)
     rows = []
     for ingredient, mass in zip(ingredients, masses, strict=True):
         fraction = mass / batch_kg
@@ -1239,7 +828,7 @@ def optimize_recipe(
         "search_strategy": search_strategy,
         "candidate_sets_considered": len(candidate_sets),
         "candidate_sets_refined": refined_sets,
-        "dispensing_unit_kg": prepared_constraints["scale"],
+        "dispensing_unit_kg": prepared_constraints.scale,
         "total_mass_kg": round(sum(row["mass_kg"] for row in rows), precision),
         "total_cost": round(sum(row["cost"] for row in rows), 2),
         "recipe": rows,

@@ -1,3 +1,10 @@
+import {
+  createTargetWorkflow,
+  imageBoundsFor,
+  roiFromSelection,
+  selectionPointFor,
+} from "./target-workflow.mjs";
+
 const $ = (selector) => document.querySelector(selector);
 const materials = $("#materials");
 const translations = {
@@ -422,23 +429,18 @@ $("#addMaterial").addEventListener("click", () => addMaterial());
 
 let currentFile = null;
 let currentExtraction = null;
-let selectionMode = false;
-let roiStart = null;
 let objectUrl = null;
-let targetSelected = false;
-let selectedTargetSource = "manual";
-let selectedTargetPayload = null;
-let displayedPaletteSource = "full_frame";
 let lastResult = null;
+const targetWorkflow = createTargetWorkflow();
 
 function updateCalculateState() {
-  $("#calculate").disabled = !targetSelected;
+  $("#calculate").disabled = !targetWorkflow.snapshot().targetSelected;
 }
 
 function setTarget(hex, payload = null, source = "manual") {
   if (!/^#[0-9A-F]{6}$/i.test(hex)) return;
   hex = hex.toUpperCase();
-  selectedTargetPayload = payload;
+  targetWorkflow.selectTarget(source, payload);
   $("#targetHex").value = hex;
   $("#targetPicker").value = hex.toLowerCase();
   $("#targetVisual").style.background = hex;
@@ -451,13 +453,12 @@ function setTarget(hex, payload = null, source = "manual") {
     const rgb = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
     $("#colorMetrics").innerHTML = `<div><span>${t("rgb")}</span><b>${rgb.join(", ")}</b></div><div><span>${t("rgbaHex")}</span><b>${hex}FF</b></div><div><span>${t("lab")}</span><b>${t("calculatedOnMix")}</b></div>`;
   }
-  selectedTargetSource = source;
-  targetSelected = true;
   updateTargetSourceText();
   updateCalculateState();
 }
 
 function updateTargetSourceText() {
+  const { selectedTargetSource } = targetWorkflow.snapshot();
   $("#targetSource").textContent = selectedTargetSource === "roi"
     ? t("selectedAnalyzedRegion")
     : selectedTargetSource === "full_frame"
@@ -483,22 +484,22 @@ const selectRegion = $("#selectRegion");
 ["dragenter", "dragover"].forEach(event => dropzone.addEventListener(event, e => { e.preventDefault(); dropzone.classList.add("drag"); }));
 ["dragleave", "drop"].forEach(event => dropzone.addEventListener(event, e => { e.preventDefault(); dropzone.classList.remove("drag"); }));
 dropzone.addEventListener("drop", e => {
-  if (!selectionMode) analyzeImage(e.dataTransfer.files[0]);
+  if (!targetWorkflow.snapshot().selectionMode) analyzeImage(e.dataTransfer.files[0]);
 });
 imageInput.addEventListener("change", e => analyzeImage(e.target.files[0]));
 dropzone.addEventListener("keydown", e => {
-  if (!selectionMode && (e.key === "Enter" || e.key === " ")) {
+  if (!targetWorkflow.snapshot().selectionMode && (e.key === "Enter" || e.key === " ")) {
     e.preventDefault();
     imageInput.click();
   }
 });
 
 function setSelectionMode(active) {
-  selectionMode = active;
+  const state = targetWorkflow.setSelectionMode(active);
   roiSelection.classList.toggle("active", active);
   roiSelection.setAttribute("aria-hidden", String(!active));
   selectRegion.classList.toggle("active", active || currentExtraction?.source === "roi");
-  if (!active) roiStart = null;
+  return state;
 }
 
 function clearRoiBox() {
@@ -509,25 +510,12 @@ function clearRoiBox() {
 function imageBounds() {
   const imageWidth = currentExtraction?.original_width || preview.naturalWidth;
   const imageHeight = currentExtraction?.original_height || preview.naturalHeight;
-  if (!imageWidth || !imageHeight) return null;
   const container = dropzone.getBoundingClientRect();
-  const scale = Math.min(container.width / imageWidth, container.height / imageHeight);
-  const width = imageWidth * scale;
-  const height = imageHeight * scale;
-  return {
-    left: container.left + (container.width - width) / 2,
-    top: container.top + (container.height - height) / 2,
-    width,
-    height,
-    container,
-  };
+  return imageBoundsFor(imageWidth, imageHeight, container);
 }
 
 function selectionPoint(event, bounds) {
-  return {
-    x: Math.min(Math.max(event.clientX, bounds.left), bounds.left + bounds.width),
-    y: Math.min(Math.max(event.clientY, bounds.top), bounds.top + bounds.height),
-  };
+  return selectionPointFor(event, bounds);
 }
 
 function drawRoiBox(start, end, bounds) {
@@ -543,48 +531,41 @@ function drawRoiBox(start, end, bounds) {
 }
 
 roiSelection.addEventListener("pointerdown", event => {
-  if (!selectionMode) return;
+  if (!targetWorkflow.snapshot().selectionMode) return;
   const bounds = imageBounds();
   if (!bounds) return;
-  roiStart = selectionPoint(event, bounds);
+  const roiStart = targetWorkflow.setRoiStart(selectionPoint(event, bounds)).roiStart;
   drawRoiBox(roiStart, roiStart, bounds);
   roiSelection.setPointerCapture(event.pointerId);
   event.preventDefault();
 });
 roiSelection.addEventListener("pointermove", event => {
-  if (!selectionMode || !roiStart) return;
+  const state = targetWorkflow.snapshot();
+  if (!state.selectionMode || !state.roiStart) return;
   const bounds = imageBounds();
-  if (bounds) drawRoiBox(roiStart, selectionPoint(event, bounds), bounds);
+  if (bounds) drawRoiBox(state.roiStart, selectionPoint(event, bounds), bounds);
 });
 roiSelection.addEventListener("pointerup", event => {
-  if (!selectionMode || !roiStart) return;
+  const state = targetWorkflow.snapshot();
+  if (!state.selectionMode || !state.roiStart) return;
   const bounds = imageBounds();
   if (!bounds) return;
   const end = selectionPoint(event, bounds);
-  const left = Math.min(roiStart.x, end.x);
-  const top = Math.min(roiStart.y, end.y);
-  const width = Math.abs(end.x - roiStart.x);
-  const height = Math.abs(end.y - roiStart.y);
-  if (width < 8 || height < 8) {
+  const imageWidth = currentExtraction?.original_width || preview.naturalWidth;
+  const imageHeight = currentExtraction?.original_height || preview.naturalHeight;
+  const roi = roiFromSelection(state.roiStart, end, bounds, imageWidth, imageHeight);
+  if (!roi) {
     clearRoiBox();
     setSelectionMode(true);
     return;
   }
-  const scaleX = (currentExtraction?.original_width || preview.naturalWidth) / bounds.width;
-  const scaleY = (currentExtraction?.original_height || preview.naturalHeight) / bounds.height;
-  const roi = {
-    x: Math.round((left - bounds.left) * scaleX),
-    y: Math.round((top - bounds.top) * scaleY),
-    width: Math.max(1, Math.round(width * scaleX)),
-    height: Math.max(1, Math.round(height * scaleY)),
-  };
   setSelectionMode(false);
   analyzeImage(currentFile, roi);
   event.preventDefault();
 });
 
 function renderPalette(colors, source) {
-  displayedPaletteSource = source;
+  targetWorkflow.setDisplayedPaletteSource(source);
   const swatches = $("#swatches");
   swatches.innerHTML = "";
   colors.forEach(color => {
@@ -598,7 +579,7 @@ function renderPalette(colors, source) {
     swatches.appendChild(button);
   });
   fullFramePalette.classList.toggle("active", source === "full_frame");
-  selectRegion.classList.toggle("active", source === "roi" || selectionMode);
+  selectRegion.classList.toggle("active", source === "roi" || targetWorkflow.snapshot().selectionMode);
 }
 
 function imageMetaText(data, source) {
@@ -642,9 +623,7 @@ async function analyzeImage(file, roi = null) {
   objectUrl = URL.createObjectURL(file);
   preview.src = objectUrl;
   $("#targetSource").textContent = t("noImageTarget");
-  targetSelected = false;
-  selectedTargetSource = "manual";
-  selectedTargetPayload = null;
+  targetWorkflow.resetForNewImage();
   updateCalculateState();
   fullFramePalette.disabled = true;
   selectRegion.disabled = true;
@@ -689,7 +668,8 @@ selectRegion.addEventListener("click", () => {
     return;
   }
   clearRoiBox();
-  setSelectionMode(!selectionMode);
+  const selectionMode = !targetWorkflow.snapshot().selectionMode;
+  setSelectionMode(selectionMode);
   $("#selectionHelp").textContent = selectionMode ? t("dragRegion") : t("cancelRegion");
 });
 
@@ -697,6 +677,7 @@ $("#calculate").addEventListener("click", async () => {
   const button = $("#calculate");
   const error = $("#errorMessage");
   error.textContent = "";
+  const { selectedTargetSource } = targetWorkflow.snapshot();
   const payload = {
     target: $("#targetHex").value,
     target_source: selectedTargetSource,
@@ -826,12 +807,13 @@ function applyTranslations() {
       input.setAttribute("aria-label", t(input.dataset.labelKey));
     });
   });
-  if (targetSelected) {
-    setTarget($("#targetHex").value, selectedTargetPayload, selectedTargetSource);
+  const state = targetWorkflow.snapshot();
+  if (state.targetSelected) {
+    setTarget($("#targetHex").value, state.selectedTargetPayload, state.selectedTargetSource);
   } else if (currentFile) {
     $("#targetSource").textContent = t("noImageTarget");
   }
-  if (currentExtraction) showPalette(displayedPaletteSource);
+  if (currentExtraction) showPalette(state.displayedPaletteSource);
   if (lastResult) renderResult(lastResult, false);
 }
 
@@ -848,7 +830,7 @@ function initializeLanguageControls() {
 fullFramePalette.disabled = true;
 selectRegion.disabled = true;
 setTarget("#D8503F");
-targetSelected = false;
+targetWorkflow.resetForNewImage();
 updateCalculateState();
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", initializeLanguageControls, { once: true });

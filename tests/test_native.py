@@ -14,9 +14,9 @@ from app.mixing import (
     RecipeConstraints,
     _cached_ingredient_ks,
     _color_loss_and_gradient,
-    _optimize_starts,
     optimize_recipe,
 )
+from app.solver_backends import optimize_starts
 
 
 PALETTE = ["#EFE9DB", "#121416", "#D92F26", "#F2B92F", "#214E9C", "#FFFFFF", "#000000", "#2F8F5B"]
@@ -95,8 +95,8 @@ def test_rust_solutions_are_feasible_and_competitive_on_conditioned_sets() -> No
     starts = np.asarray(starts)
 
     common = (starts, lower, upper, ks, target_lab, 350, loss_and_gradient)
-    rust = _optimize_starts(*common, native.load_solver())
-    scipy_results = _optimize_starts(*common, None)
+    rust = optimize_starts(*common, native.load_solver())
+    scipy_results = optimize_starts(*common, None)
 
     for (solved, outcome), (reference, _) in zip(rust, scipy_results, strict=True):
         assert outcome is not None
