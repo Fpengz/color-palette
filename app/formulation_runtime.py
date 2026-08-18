@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import math
 import multiprocessing
 import os
 import threading
@@ -28,14 +29,26 @@ class FormulationBusy(RuntimeError):
         self.queued = queued
 
 
+class FormulationTimeout(RuntimeError):
+    """Raised when one solve exceeds the runtime safety budget."""
+
+
 class FormulationRuntime:
     """Serve formulation work with bounded admission and safe process fallback."""
 
-    def __init__(self, slots: int = FORMULATION_SLOTS, queue_limit: int | None = None) -> None:
+    def __init__(
+        self,
+        slots: int = FORMULATION_SLOTS,
+        queue_limit: int | None = None,
+        timeout_seconds: float = 120.0,
+    ) -> None:
         if slots < 1 or (queue_limit is not None and queue_limit < slots):
             raise ValueError("Formulation runtime limits are invalid")
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("Formulation timeout must be finite and positive")
         self.slots = slots
         self.queue_limit = queue_limit if queue_limit is not None else slots * 8
+        self.timeout_seconds = timeout_seconds
         self._formulation_slots = anyio.Semaphore(slots)
         self._waiting = 0
         self._pool: ProcessPoolExecutor | None = None
@@ -46,6 +59,24 @@ class FormulationRuntime:
     def waiting(self) -> int:
         return self._waiting
 
+    @property
+    def pool_state(self) -> str:
+        if self._pool_unavailable:
+            return "thread_fallback"
+        if self._pool is None:
+            return "not_started"
+        return "process_pool"
+
+    def snapshot(self) -> dict[str, int | float | str]:
+        """Return operational state without exposing requests or recipe data."""
+        return {
+            "slots": self.slots,
+            "queue_limit": self.queue_limit,
+            "queue_depth": self._waiting,
+            "timeout_seconds": self.timeout_seconds,
+            "pool_state": self.pool_state,
+        }
+
     async def solve(self, request: FormulationRequest) -> FormulationResult:
         """Admit one formulation and run it off the event loop."""
         if self._waiting >= self.queue_limit:
@@ -53,7 +84,13 @@ class FormulationRuntime:
         self._waiting += 1
         try:
             async with self._formulation_slots:
-                return await self._run(request)
+                try:
+                    return await asyncio.wait_for(self._run(request), self.timeout_seconds)
+                except asyncio.TimeoutError as exc:
+                    self.shutdown()
+                    raise FormulationTimeout(
+                        f"The formulation exceeded the {self.timeout_seconds:g} second time limit."
+                    ) from exc
         finally:
             self._waiting -= 1
 

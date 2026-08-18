@@ -19,10 +19,10 @@ from .formulation_runtime import (
     FORMULATION_QUEUE_LIMIT,
     FORMULATION_SLOTS,
     FormulationBusy,
+    FormulationTimeout,
     formulation_runtime,
 )
 from .mixing import Ingredient, RecipeConstraints
-from .target_capture import TargetSelection
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -167,15 +167,32 @@ def index() -> FileResponse:
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok", "service": "chromix"}
+    return {"status": "ok", "service": "chromix", "runtime": formulation_runtime.snapshot()}
+
+
+@app.get("/api/health/ready")
+def readiness() -> dict:
+    """Report whether the service can accept work, including safe fallback mode."""
+    return {
+        "status": "ready",
+        "service": "chromix",
+        "formulation": formulation_runtime.snapshot(),
+        "calibration": {"status": "not_configured", "active": False},
+    }
 
 
 @app.post("/api/target/validate")
 def validate_target(target: TargetMeasurement) -> dict:
+    from .capabilities import DEFAULT_CALIBRATION_REGISTRY
+
+    decision = DEFAULT_CALIBRATION_REGISTRY.evaluate_target(target.source)
     return {
         "status": "accepted",
         "source": target.source,
-        "calibration_status": "pending",
+        "calibration_status": decision.calibration_status,
+        "calibration_eligible": decision.eligible,
+        "calibration_reason_code": decision.reason_code,
+        "calibration_version": decision.capability_version,
         "target": target.model_dump(mode="json"),
         "disclaimer": "Target metadata is validated; production use still requires a validated material calibration.",
     }
@@ -240,25 +257,25 @@ async def mix(request: MixRequest) -> dict:
             correction_recipe=tuple(request.constraints.correction_recipe.items()),
             color_tolerance_delta_e=request.constraints.color_tolerance_delta_e,
         )
-        target_selection = TargetSelection(source=request.target_source, hex_color=request.target)
         result = await formulation_runtime.solve(
             DigitalFormulationRequest(
                 request.target,
                 request.batch_kg,
                 tuple(ingredients),
                 recipe_constraints,
+                request.target_source,
             )
         )
-        if not isinstance(result, dict):
-            raise TypeError("The digital formulation returned an unexpected result")
-        result["input_provenance"]["target_source"] = target_selection.source
-        result["constraints"] = request.constraints.model_dump()
-        result["telemetry"] = {
+        response = result.as_dict()
+        response["constraints"] = request.constraints.model_dump()
+        response["telemetry"] = {
             "outcome": "success",
             "duration_ms": round((time.perf_counter() - started) * 1000, 2),
             "queue_slots": FORMULATION_SLOTS,
+            "queue_depth": formulation_runtime.waiting,
+            "runtime_mode": formulation_runtime.pool_state,
         }
-        return result
+        return response
     except FormulationBusy as exc:
         raise HTTPException(
             status_code=503,
@@ -268,6 +285,18 @@ async def mix(request: MixRequest) -> dict:
                 started,
                 "formulation_busy",
                 {"queued": exc.queued},
+            ),
+            headers={"Retry-After": "5"},
+        ) from exc
+    except FormulationTimeout as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=_failure_detail(
+                "formulation_timeout",
+                str(exc),
+                started,
+                "formulation_timeout",
+                {"timeout_seconds": formulation_runtime.timeout_seconds},
             ),
             headers={"Retry-After": "5"},
         ) from exc

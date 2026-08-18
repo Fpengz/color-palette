@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .color import parse_hex
+
+
+def _timestamp(value: str, field_name: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field_name} must include a timezone")
+    return value
 
 
 class FiniteModel(BaseModel):
@@ -21,6 +32,8 @@ class MeasuredSpectrum(FiniteModel):
     raw_uri: str = Field(min_length=1)
     calibration_evidence: str = Field(min_length=1)
     units: str = "fraction"
+    grid_policy: Literal["400-700nm@10nm", "documented_resampling"] = "400-700nm@10nm"
+    resampling_plan: str | None = None
 
     @model_validator(mode="after")
     def validate_series(self) -> MeasuredSpectrum:
@@ -34,6 +47,15 @@ class MeasuredSpectrum(FiniteModel):
             raise ValueError("Reflectance must be between zero and one")
         if self.units != "fraction":
             raise ValueError("Reflectance units must be the fraction [0, 1]")
+        if self.grid_policy == "400-700nm@10nm":
+            expected = [400 + 10 * index for index in range(31)]
+            if len(self.wavelengths_nm) != len(expected) or any(
+                not math.isclose(actual, wanted, abs_tol=1e-6)
+                for actual, wanted in zip(self.wavelengths_nm, expected, strict=False)
+            ):
+                raise ValueError("Measured spectra must use the 400-700 nm grid at 10 nm intervals")
+        elif not self.resampling_plan or not self.resampling_plan.strip():
+            raise ValueError("Documented resampling spectra need a nonblank resampling plan")
         return self
 
 
@@ -99,6 +121,11 @@ class PredictionSnapshot(FiniteModel):
             raise ValueError("Predicted Delta E must be finite and nonnegative")
         return value
 
+    @field_validator("created_at")
+    @classmethod
+    def valid_created_at(cls, value: str) -> str:
+        return _timestamp(value, "Prediction creation time")
+
 
 class CorrectionRound(FiniteModel):
     correction_id: str = Field(min_length=1)
@@ -121,6 +148,11 @@ class CorrectionRound(FiniteModel):
             raise ValueError("Measured Delta E must be finite and nonnegative")
         return value
 
+    @field_validator("created_at")
+    @classmethod
+    def valid_created_at(cls, value: str) -> str:
+        return _timestamp(value, "Correction creation time")
+
 
 class AcceptanceDecision(FiniteModel):
     status: str = Field(pattern="^(accepted|rejected|pending)$")
@@ -135,6 +167,19 @@ class AcceptanceDecision(FiniteModel):
         if value is not None and (not math.isfinite(value) or value < 0):
             raise ValueError("Tolerance must be finite and nonnegative")
         return value
+
+    @field_validator("decided_at")
+    @classmethod
+    def valid_decided_at(cls, value: str | None) -> str | None:
+        return _timestamp(value, "Acceptance decision time") if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self) -> AcceptanceDecision:
+        if self.status == "pending" and (self.decided_at is not None or self.decided_by is not None):
+            raise ValueError("Pending acceptance decisions cannot have decision metadata")
+        if self.status != "pending" and (not self.decided_at or not self.decided_by or self.tolerance_delta_e is None):
+            raise ValueError("Completed acceptance decisions need time, operator, and tolerance metadata")
+        return self
 
 
 class SampleVersions(FiniteModel):
@@ -195,12 +240,12 @@ class MeasuredSampleRecord(FiniteModel):
         ingredient_names = set(self.ingredient_concentrations)
         if self.thickness_mm <= 0:
             raise ValueError("Sample thickness must be positive")
-        if not ingredient_names <= set(self.material_roles):
-            raise ValueError("Every ingredient needs a material role")
-        if not ingredient_names <= set(self.material_lots):
-            raise ValueError("Every ingredient needs a material lot")
-        if not ingredient_names <= set(self.supplier_product_ids):
-            raise ValueError("Every ingredient needs a supplier/product identifier")
+        if set(self.material_roles) != ingredient_names:
+            raise ValueError("Material roles must match the ingredient names exactly")
+        if set(self.material_lots) != ingredient_names:
+            raise ValueError("Material lots must match the ingredient names exactly")
+        if set(self.supplier_product_ids) != ingredient_names:
+            raise ValueError("Supplier/product identifiers must match the ingredient names exactly")
         for mapping_name, mapping in (
             ("material roles", self.material_roles),
             ("supplier/product identifiers", self.supplier_product_ids),
@@ -210,6 +255,7 @@ class MeasuredSampleRecord(FiniteModel):
                 raise ValueError(f"{mapping_name} must contain nonblank names and values")
         if self.schema_version != self.versions.data_schema_version:
             raise ValueError("Record and version metadata must use the same schema version")
+        _timestamp(self.measured_at, "Measurement time")
         return self
 
     def canonical_json(self) -> str:

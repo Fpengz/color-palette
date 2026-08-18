@@ -15,19 +15,24 @@ ROI = tuple[int, int, int, int]
 SUPPORTED_FORMATS = frozenset({"JPEG", "PNG", "WEBP"})
 ALPHA_POLICY = "exclude_alpha_below_32; treat_remaining_pixels_as_opaque"
 ANIMATION_POLICY = "first_frame_only"
-MODEL_VERSION = "rgb-kmeans-prototype-v1"
+MODEL_VERSION = "rgb-kmeans-prototype-v2-alpha-weighted"
 
 
 class ImageAnalysisError(CodedError):
     pass
 
 
-def _kmeans(pixels: np.ndarray, clusters: int, iterations: int = 24) -> tuple[np.ndarray, np.ndarray]:
-    """Small deterministic weighted-free k-means tailored for a browser demo."""
+def _kmeans(
+    pixels: np.ndarray,
+    weights: np.ndarray,
+    clusters: int,
+    iterations: int = 24,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Small deterministic alpha-weighted k-means tailored for a browser demo."""
     count = len(pixels)
     clusters = min(clusters, count)
     # Deterministic farthest-point seeds avoid losing a smaller but distinct color cluster.
-    mean = pixels.mean(axis=0)
+    mean = np.average(pixels, axis=0, weights=weights)
     centroids = [pixels[np.argmin(((pixels - mean) ** 2).sum(axis=1))].astype(float)]
     while len(centroids) < clusters:
         distances = ((pixels[:, None, :] - np.stack(centroids)[None, :, :]) ** 2).sum(axis=2)
@@ -49,7 +54,11 @@ def _kmeans(pixels: np.ndarray, clusters: int, iterations: int = 24) -> tuple[np
         for index in range(clusters):
             members = pixels[new_labels == index]
             if len(members):
-                new_centroids[index] = members.mean(axis=0)
+                new_centroids[index] = np.average(
+                    members,
+                    axis=0,
+                    weights=weights[new_labels == index],
+                )
         if np.array_equal(labels, new_labels) or np.max(np.abs(new_centroids - centroids)) < 0.5:
             labels = new_labels
             centroids = new_centroids
@@ -62,7 +71,9 @@ def _analyze_region(image: Image.Image, color_count: int) -> dict:
     analyzed = image.copy()
     analyzed.thumbnail((360, 360), Image.Resampling.LANCZOS)
     rgba = np.asarray(analyzed).reshape(-1, 4)
-    opaque = rgba[rgba[:, 3] >= 32, :3]
+    visible = rgba[:, 3] >= 32
+    opaque = rgba[visible, :3]
+    alpha_weights = rgba[visible, 3].astype(float) / 255.0
     if len(opaque) == 0:
         raise ImageAnalysisError("The image contains no visible pixels", code="no_visible_pixels")
 
@@ -70,9 +81,14 @@ def _analyze_region(image: Image.Image, color_count: int) -> dict:
     if len(opaque) > 45_000:
         sample_indices = np.linspace(0, len(opaque) - 1, 45_000, dtype=int)
         opaque = opaque[sample_indices]
+        alpha_weights = alpha_weights[sample_indices]
 
-    centroids, labels = _kmeans(opaque.astype(float), max(1, min(color_count, 8)))
-    counts = np.bincount(labels, minlength=len(centroids))
+    centroids, labels = _kmeans(
+        opaque.astype(float),
+        alpha_weights,
+        max(1, min(color_count, 8)),
+    )
+    counts = np.bincount(labels, weights=alpha_weights, minlength=len(centroids))
     order = np.argsort(counts)[::-1]
     total = counts.sum()
     colors = []
@@ -86,10 +102,29 @@ def _analyze_region(image: Image.Image, color_count: int) -> dict:
         payload["share"] = round(float(counts[index] / total * 100), 1)
         colors.append(payload)
 
+    clipped_fraction = float(np.mean(np.any((opaque <= 1) | (opaque >= 254), axis=1)))
+    transparent_fraction = float(1 - len(opaque) / len(rgba))
+    dominant_lab = colors[0]["lab"]
+    dominant_chroma = float(np.hypot(dominant_lab[1], dominant_lab[2]))
+    warnings: list[str] = []
+    if colors[0]["share"] >= 55 and dominant_lab[0] >= 70 and dominant_chroma <= 18:
+        warnings.append("neutral_background_dominant")
+    if clipped_fraction >= 0.03:
+        warnings.append("clipped_pixels")
+    if transparent_fraction >= 0.25:
+        warnings.append("transparent_pixels")
+
     return {
         "width": analyzed.width,
         "height": analyzed.height,
         "analyzed_pixels": len(opaque),
+        "capture_quality": {
+            "status": "review" if warnings else "ready",
+            "warnings": warnings,
+            "dominant_share": colors[0]["share"],
+            "clipped_fraction": round(clipped_fraction, 4),
+            "transparent_fraction": round(transparent_fraction, 4),
+        },
         "dominant": colors[0],
         "palette": colors,
     }
@@ -190,11 +225,13 @@ def extract_palette(data: bytes, color_count: int = 5, roi: ROI | None = None) -
         "roi": {"x": roi[0], "y": roi[1], "width": roi[2], "height": roi[3]} if roi else None,
         "model_version": MODEL_VERSION,
         "calibration_status": "uncalibrated",
+        "capture_quality": selected["capture_quality"],
         **metadata,
         "dominant": selected["dominant"],
         "palette": selected["palette"],
         "full_frame": {
             "analyzed_pixels": full_frame["analyzed_pixels"],
+            "capture_quality": full_frame["capture_quality"],
             "dominant": full_frame["dominant"],
             "palette": full_frame["palette"],
         },

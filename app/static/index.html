@@ -55,6 +55,7 @@
 
         <div class="analysis-panel">
           <div class="panel-label"><span data-i18n="extractedPalette">EXTRACTED PALETTE</span><small id="imageMeta" data-i18n="awaitingImage">Awaiting image</small></div>
+          <small class="capture-quality" id="captureQuality" aria-live="polite"></small>
           <div class="swatches" id="swatches">
             <button class="swatch placeholder"></button><button class="swatch placeholder"></button><button class="swatch placeholder"></button><button class="swatch placeholder"></button><button class="swatch placeholder"></button>
           </div>
@@ -99,7 +100,7 @@
         </section>
 
         <aside class="result-card" id="resultCard">
-          <div class="result-header"><span data-i18n="formulationEstimate">FORMULATION ESTIMATE</span><div class="confidence"><i></i><b id="quality" data-i18n="ready">READY</b></div></div>
+          <div class="result-header"><span data-i18n="formulationEstimate">FORMULATION ESTIMATE</span><div class="confidence"><i></i><b id="quality" data-i18n="digitalFit">DIGITAL FIT</b></div></div>
           <div class="match-visual">
             <div class="target-half" id="targetVisual"><span data-i18n="target">TARGET</span></div>
             <div class="result-half" id="resultVisual"><span data-i18n="predicted">PREDICTED</span></div>
@@ -124,6 +125,6 @@
   </main>
 
   <footer><span>CHROMIX / PROTOTYPE 01</span><span data-i18n="footerTagline">COLOR SCIENCE × MATERIAL INTELLIGENCE</span></footer>
-  <script type="module" src="/static/app.js?v=6"></script>
+  <script type="module" src="/static/app.js?v=7"></script>
 </body>
 </html>

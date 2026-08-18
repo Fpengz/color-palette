@@ -70,6 +70,7 @@ const translations = {
     calculateFormula: "CALCULATE FORMULA",
     optimizing: "OPTIMIZING…",
     ready: "READY",
+    digitalFit: "DIGITAL FIT",
     target: "TARGET",
     predicted: "PREDICTED",
     colorDifference: "COLOR DIFFERENCE",
@@ -86,6 +87,11 @@ const translations = {
     footerTagline: "COLOR SCIENCE × MATERIAL INTELLIGENCE",
     selectedRegionMeta: "selected region",
     fullFrameMeta: "full frame",
+    captureQualityReady: "capture quality: ready",
+    captureQualityReview: "capture quality: review recommended",
+    captureWarningNeutralBackground: "The dominant color may be the background; select the product region.",
+    captureWarningClippedPixels: "Some pixels are clipped; highlights or shadows may distort the target.",
+    captureWarningTransparentPixels: "Many pixels are transparent; verify the visible product area.",
     pixels: "px",
     regionHelp: "Region analyzed. Choose a swatch or use Full Frame to compare against the complete image.",
     fullFrameHelp: "Full-frame palette shown. Choose a swatch or select a region; the largest cluster is not auto-selected.",
@@ -176,6 +182,8 @@ const translations = {
     error_no_feasible_combination: "No combination of materials satisfies the requested constraints.",
     error_no_feasible_recipe: "The formulation optimizer could not find a workable recipe.",
     error_formulation_busy: "The formulation engine is busy. Please try again in a few seconds.",
+    error_formulation_timeout: "The formulation exceeded its safety time limit. Please retry with a smaller search.",
+    error_calibration_unavailable: "The requested calibration is not active for this target source.",
     estimated: "est.",
     estimatedCost: "est.",
     estimatedTotal: "EST.",
@@ -248,6 +256,7 @@ const translations = {
     calculateFormula: "计算配方",
     optimizing: "优化中…",
     ready: "就绪",
+    digitalFit: "数字拟合",
     target: "目标",
     predicted: "预测",
     colorDifference: "色差",
@@ -264,6 +273,11 @@ const translations = {
     footerTagline: "色彩科学 × 材料智能",
     selectedRegionMeta: "选定区域",
     fullFrameMeta: "完整画面",
+    captureQualityReady: "采集质量：良好",
+    captureQualityReview: "采集质量：建议复核",
+    captureWarningNeutralBackground: "主色可能是背景；请选择产品区域。",
+    captureWarningClippedPixels: "部分像素已截断；高光或阴影可能影响目标颜色。",
+    captureWarningTransparentPixels: "许多像素是透明的；请确认可见的产品区域。",
     pixels: "像素",
     regionHelp: "已分析选定区域。选择色块，或使用完整画面对比整张图片。",
     fullFrameHelp: "已显示完整画面色板。选择色块或选择区域；最大色簇不会自动选中。",
@@ -354,6 +368,8 @@ const translations = {
     error_no_feasible_combination: "没有任何材料组合能够满足所设置的约束条件。",
     error_no_feasible_recipe: "配方优化器未能找到可行的配方。",
     error_formulation_busy: "配方引擎正忙，请稍等几秒后重试。",
+    error_formulation_timeout: "配方计算超过安全时间限制。请缩小搜索范围后重试。",
+    error_calibration_unavailable: "请求的校准尚未对该目标来源启用。",
     estimated: "预计",
     estimatedCost: "预计",
     estimatedTotal: "预计",
@@ -588,9 +604,21 @@ function imageMetaText(data, source) {
   return `${data.original_width} × ${data.original_height} · ${sourceLabel} · ${palette.analyzed_pixels.toLocaleString(currentLocale === "zh" ? "zh-CN" : "en-US")} ${t("pixels")}`;
 }
 
+function updateCaptureQuality(data, source) {
+  const quality = source === "roi" ? data.capture_quality : data.full_frame.capture_quality;
+  const label = quality.status === "review" ? t("captureQualityReview") : t("captureQualityReady");
+  const warnings = quality.warnings
+    .map(code => t(`captureWarning${code.replace(/(^|_)(\w)/g, (_, separator, letter) => letter.toUpperCase())}`))
+    .filter(Boolean);
+  const element = $("#captureQuality");
+  element.textContent = warnings.length ? `${label} · ${warnings.join(" ")}` : label;
+  element.dataset.status = quality.status;
+}
+
 function updateImageMeta(data) {
   const source = data.source === "roi" ? "roi" : "full_frame";
   $("#imageMeta").textContent = imageMetaText(data, source);
+  updateCaptureQuality(data, source);
   $("#selectionHelp").textContent = source === "roi" ? t("regionHelp") : t("fullFrameHelp");
 }
 
@@ -599,6 +627,7 @@ function showPalette(source) {
   const palette = source === "roi" ? currentExtraction.palette : currentExtraction.full_frame.palette;
   renderPalette(palette, source);
   $("#imageMeta").textContent = imageMetaText(currentExtraction, source);
+  updateCaptureQuality(currentExtraction, source);
   $("#selectionHelp").textContent = source === "roi" ? t("regionHelp") : t("fullFrameHelp");
 }
 
@@ -765,7 +794,7 @@ function renderResult(data, scroll = true) {
   $("#targetVisual").style.background = data.target.hex;
   $("#resultVisual").style.background = data.predicted.hex;
   $("#deltaE").textContent = `${data.delta_e_metric === "CIEDE2000" ? "ΔE00" : "ΔE"} ${data.delta_e.toFixed(2)}`;
-  $("#quality").textContent = qualityText(data.quality);
+  $("#quality").textContent = t("digitalFit").toUpperCase();
   $("#scoreHelp").textContent = data.delta_e < 2 ? t("scoreClose") : t("scoreNoMatch");
   renderReachability(data);
   $("#recipe").innerHTML = data.recipe.filter(row => row.mass_kg > 0).map(row => `

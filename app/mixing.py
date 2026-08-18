@@ -799,18 +799,44 @@ def optimize_recipe(
         batch_kg,
     )
     precision = _decimal_places(prepared_constraints.scale)
-    rows = []
-    for ingredient, mass in zip(ingredients, masses, strict=True):
-        fraction = mass / batch_kg
-        rows.append({
-            "name": ingredient.name,
-            "color": ingredient.color.hex,
-            "mass_kg": round(float(mass), precision),
-            "percentage": round(float(fraction * 100), 3),
-            "available_kg": ingredient.available_kg,
-            "cost": round(float(mass) * ingredient.cost_per_kg, 2),
-            "strength": ingredient.strength,
-        })
+    def recipe_rows(mass_values: np.ndarray) -> list[dict]:
+        rows = []
+        for ingredient, mass in zip(ingredients, mass_values, strict=True):
+            fraction = mass / batch_kg
+            rows.append({
+                "name": ingredient.name,
+                "color": ingredient.color.hex,
+                "mass_kg": round(float(mass), precision),
+                "percentage": round(float(fraction * 100), 3),
+                "available_kg": ingredient.available_kg,
+                "cost": round(float(mass) * ingredient.cost_per_kg, 2),
+                "strength": ingredient.strength,
+            })
+        return rows
+
+    rows = recipe_rows(masses)
+    alternatives: list[dict] = []
+    if constraints.color_tolerance_delta_e is not None:
+        seen: set[tuple[int, ...]] = set()
+        tolerance_candidates = sorted(
+            (candidate for candidate in candidates if candidate[2] <= constraints.color_tolerance_delta_e),
+            key=lambda candidate: (candidate[3], *color_rank(candidate)),
+        )
+        for candidate in tolerance_candidates:
+            candidate_masses = candidate[0]
+            key = tuple(int(round(mass / prepared_constraints.scale)) for mass in candidate_masses)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidate_rows = recipe_rows(candidate_masses)
+            alternatives.append({
+                "delta_e": round(candidate[2], 2),
+                "total_cost": round(sum(row["cost"] for row in candidate_rows), 2),
+                "optimizer_status": candidate[4],
+                "recipe": candidate_rows,
+            })
+            if len(alternatives) == 3:
+                break
 
     return {
         "target": color_payload(target),
@@ -832,6 +858,11 @@ def optimize_recipe(
         "total_mass_kg": round(sum(row["mass_kg"] for row in rows), precision),
         "total_cost": round(sum(row["cost"] for row in rows), 2),
         "recipe": rows,
+        "alternatives": alternatives,
+        "robustness": {
+            "status": "unavailable",
+            "reason": "No calibrated lot or process variation model is configured",
+        },
         "model": "Kubelka–Munk reflectance prototype",
         "model_version": MODEL_VERSION,
         "residual_model_version": None,

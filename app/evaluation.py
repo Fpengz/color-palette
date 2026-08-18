@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
+from datetime import datetime
 
 import numpy as np
 
@@ -29,6 +30,28 @@ class EvaluationObservation:
     interval_error: float | None = None
     is_ood: bool = False
     ood_flag: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.sample_id.strip() or not self.material_lot.strip() or not self.recipe_family.strip() or not self.product_family.strip():
+            raise ValueError("Evaluation observations need nonblank identifiers")
+        try:
+            parsed = datetime.fromisoformat(self.timestamp.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("Evaluation timestamp must be ISO-8601") from exc
+        if parsed.tzinfo is None:
+            raise ValueError("Evaluation timestamp must include a timezone")
+        if len(self.measured_lab) != 3 or len(self.predicted_lab) != 3:
+            raise ValueError("Evaluation Lab values must contain three components")
+        if any(not math.isfinite(value) for value in (*self.measured_lab, *self.predicted_lab)):
+            raise ValueError("Evaluation Lab values must be finite")
+        if not math.isfinite(self.tolerance_delta_e) or self.tolerance_delta_e < 0:
+            raise ValueError("Evaluation tolerance must be finite and nonnegative")
+        if self.correction_rounds < 0 or self.recipe_cost < 0 or self.ingredient_count < 0 or self.constraint_violations < 0:
+            raise ValueError("Evaluation metrics cannot be negative")
+        if self.interval_radius is not None and (not math.isfinite(self.interval_radius) or self.interval_radius < 0):
+            raise ValueError("Evaluation interval radius must be finite and nonnegative")
+        if self.interval_error is not None and (not math.isfinite(self.interval_error) or self.interval_error < 0):
+            raise ValueError("Evaluation interval error must be finite and nonnegative")
 
     @property
     def delta_e_00(self) -> float:

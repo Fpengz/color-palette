@@ -108,6 +108,21 @@ def test_upload_metadata_defines_alpha_icc_and_animation_behavior() -> None:
     assert result["icc_profile"] == "converted_to_srgb"
     assert result["alpha_policy"].startswith("exclude_alpha_below_32")
     assert result["dominant"]["hex"] == "#D8503F"
+    assert "transparent_pixels" in result["capture_quality"]["warnings"]
+
+
+def test_capture_quality_flags_a_neutral_background_dominating_the_frame() -> None:
+    image = Image.new("RGB", (100, 100), "#ECE1D8")
+    for x in range(20):
+        for y in range(100):
+            image.putpixel((x, y), (208, 54, 43))
+    output = BytesIO()
+    image.save(output, format="PNG")
+
+    result = extract_palette(output.getvalue(), color_count=2)
+
+    assert result["capture_quality"]["status"] == "review"
+    assert "neutral_background_dominant" in result["capture_quality"]["warnings"]
 
 
 def test_animated_webp_uses_first_frame() -> None:

@@ -37,6 +37,8 @@ def sample_record() -> MeasuredSampleRecord:
             instrument="test-spectro",
             raw_uri="s3://approved/sample-1.csv",
             calibration_evidence="white-tile-check-1",
+            grid_policy="documented_resampling",
+            resampling_plan="Test fixture uses a three-point grid before protocol resampling.",
         ),
         measured_lab=LabMeasurement(
             l=50,
@@ -86,10 +88,36 @@ def test_measured_sample_requires_material_lots_and_matching_series() -> None:
             calibration_evidence="white-tile-check-1",
         )
 
-    with pytest.raises(ValueError, match="material lot"):
+    with pytest.raises(ValueError, match="Material lots must match"):
         record = sample_record().model_dump()
         record["material_lots"] = {"Resin": "lot-r"}
         MeasuredSampleRecord.model_validate(record)
+
+
+def test_measured_spectrum_requires_protocol_grid_or_documented_resampling() -> None:
+    with pytest.raises(ValueError, match="400-700 nm grid"):
+        MeasuredSpectrum(
+            wavelengths_nm=[400, 500, 600],
+            reflectance=[0.2, 0.4, 0.6],
+            instrument="test",
+            raw_uri="s3://approved/raw",
+            calibration_evidence="white-tile-check-1",
+        )
+
+    with pytest.raises(ValueError, match="resampling plan"):
+        MeasuredSpectrum(
+            wavelengths_nm=[400, 500, 600],
+            reflectance=[0.2, 0.4, 0.6],
+            instrument="test",
+            raw_uri="s3://approved/raw",
+            calibration_evidence="white-tile-check-1",
+            grid_policy="documented_resampling",
+        )
+
+
+def test_completed_acceptance_requires_a_traceable_decision() -> None:
+    with pytest.raises(ValueError, match="Completed acceptance decisions need"):
+        AcceptanceDecision(status="accepted")
 
 
 def test_target_measurement_requires_source_specific_provenance() -> None:

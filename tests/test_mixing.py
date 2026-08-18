@@ -152,6 +152,22 @@ def test_cost_is_secondary_to_a_declared_color_tolerance() -> None:
 
     assert result["optimization_objective"] == "lowest_cost_within_color_tolerance"
     assert result["total_cost"] == pytest.approx(1.0)
+    assert result["alternatives"]
+    assert all(option["delta_e"] <= 100 for option in result["alternatives"])
+
+
+def test_recipes_without_a_declared_tolerance_do_not_claim_alternatives() -> None:
+    result = optimize_recipe(
+        "#888888",
+        1,
+        [
+            Ingredient("Black", parse_hex("#000000"), 1),
+            Ingredient("White", parse_hex("#FFFFFF"), 1),
+        ],
+    )
+
+    assert result["alternatives"] == []
+    assert result["robustness"]["status"] == "unavailable"
 
 
 def test_dispensing_rounding_spreads_leftover_units_across_materials() -> None:

@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import pickle
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 
 from app import main
 from app.errors import CodedError
 from app.extraction import ImageAnalysisError
-from app.formulation_runtime import formulation_runtime
+from app.formulation import DigitalFormulationRequest
+from app.formulation_runtime import FormulationRuntime, FormulationTimeout, formulation_runtime
 from app.mixing import Ingredient, RecipeConstraints, optimize_recipe
 
 
@@ -49,6 +51,8 @@ def test_waiting_counter_is_released_after_a_request() -> None:
     before = formulation_runtime.waiting
 
     assert client.post("/api/mix", json=REQUEST).status_code == 200
+    telemetry = client.post("/api/mix", json=REQUEST).json()["telemetry"]
+    assert telemetry["runtime_mode"] in {"process_pool", "thread_fallback", "not_started"}
     assert client.post("/api/mix", json={**REQUEST, "batch_kg": 1_000_000}).status_code == 400
 
     # A leak here would eventually wedge the endpoint at a permanent 503.
@@ -101,3 +105,20 @@ def test_formulation_falls_back_when_no_worker_process_is_available(
 
     assert response.status_code == 200
     assert response.json()["delta_e"] >= 0
+
+
+def test_formulation_runtime_times_out_and_releases_admission(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = FormulationRuntime(slots=1, queue_limit=1, timeout_seconds=0.01)
+
+    async def delayed_run(request: object) -> object:
+        await anyio.sleep(0.05)
+        return request
+
+    monkeypatch.setattr(runtime, "_run", delayed_run)
+
+    with pytest.raises(FormulationTimeout, match="time limit"):
+        anyio.run(
+            runtime.solve,
+            DigitalFormulationRequest("#123456", 1, ()),
+        )
+    assert runtime.waiting == 0

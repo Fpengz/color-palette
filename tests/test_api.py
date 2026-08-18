@@ -13,7 +13,10 @@ client = TestClient(app)
 
 
 def test_health_and_home() -> None:
-    assert client.get("/api/health").json()["status"] == "ok"
+    health = client.get("/api/health").json()
+    assert health["status"] == "ok"
+    assert health["runtime"]["queue_limit"] >= health["runtime"]["slots"]
+    assert client.get("/api/health/ready").json()["status"] == "ready"
     assert "CHROMIX" in client.get("/").text
 
 
@@ -22,7 +25,7 @@ def test_home_exposes_chinese_demo_locale() -> None:
 
     assert 'data-locale="zh"' in page
     assert 'href="?lang=zh"' in page
-    assert '/static/app.js?v=6' in page
+    assert '/static/app.js?v=7' in page
     assert "中文" in page
     assert "pageDescription" in page
 
@@ -32,7 +35,9 @@ def test_target_validation_accepts_explicit_hex_provenance() -> None:
 
     assert response.status_code == 200
     assert response.json()["status"] == "accepted"
-    assert response.json()["calibration_status"] == "pending"
+    assert response.json()["calibration_status"] == "uncalibrated"
+    assert response.json()["calibration_eligible"] is False
+    assert response.json()["calibration_reason_code"] == "digital_target_only"
     assert response.json()["target"]["hex_color"] == "#123456"
 
 
@@ -49,6 +54,7 @@ def test_extract_endpoint() -> None:
     assert response.json()["source"] == "full_frame"
     assert response.json()["full_frame"]["palette"][0]["hex"] == "#12AB34"
     assert response.json()["calibration_status"] == "uncalibrated"
+    assert response.json()["capture_quality"]["status"] in {"ready", "review"}
     assert response.json()["telemetry"]["outcome"] == "success"
 
 

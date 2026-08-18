@@ -51,3 +51,22 @@ def test_grouped_split_keeps_lot_family_product_groups_separate() -> None:
     assert not train_groups & test_groups
     assert not validation_groups & test_groups
     assert split.train and split.test
+
+
+def test_evaluation_observations_reject_malformed_measurement_metadata() -> None:
+    with pytest.raises(ValueError, match="timezone"):
+        observation(1, "lot-1", "family-1", 0.5).__class__(
+            sample_id="sample-1",
+            measured_lab=(50, 20, 10),
+            predicted_lab=(50, 20, 10),
+            timestamp="2026-08-01T00:00:00",
+            material_lot="lot-1",
+            recipe_family="family-1",
+            product_family="PP",
+            tolerance_delta_e=2,
+            first_shot=True,
+            correction_rounds=0,
+            recipe_cost=1,
+            ingredient_count=2,
+            constraint_violations=0,
+        )
